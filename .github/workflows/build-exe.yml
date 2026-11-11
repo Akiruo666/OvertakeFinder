@@ -1,0 +1,30 @@
+name: Build Windows exe
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Self-test (parses any .acreplay in the repo)
+        run: python selftest.py
+
+      - name: Install PyInstaller
+        run: python -m pip install pyinstaller
+
+      - name: Build exe
+        run: pyinstaller --onefile --windowed --name ACOvertakeFinder app.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ACOvertakeFinder
+          path: dist/ACOvertakeFinder.exe
