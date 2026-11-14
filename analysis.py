@@ -90,7 +90,7 @@ class RaceModel:
 
     def lap_at(self, car_index, frame):
         car = self.replay.cars[car_index]
-        if car.lap_index is None:
+        if car.lap_index is None:      # no lap information recorded for this car
             return None
         lap = car.lap_index[frame] + 1
         return min(lap, self.race_laps) if self.race_laps else lap
@@ -134,6 +134,31 @@ def classification(replay, final_progress=None):
                 c.total_time_ms if c.lap_times_ms else 10**12,
                 dist)
     return sorted(replay.cars, key=key)
+
+
+# ------------------------------------------------------------------- units
+METRIC = "metric"
+IMPERIAL = "imperial"
+FT_PER_M = 3.280839895
+FT_PER_MILE = 5280.0
+MPH_PER_KMH = 0.621371192
+# (short length, long length, speed)
+UNIT_NAMES = {METRIC: ("m", "km", "km/h"), IMPERIAL: ("ft", "mi", "mph")}
+
+
+def short_length(metres, system):
+    """Metres, or feet for the imperial system (gaps, short distances)."""
+    return metres if system == METRIC else metres * FT_PER_M
+
+
+def long_length(metres, system):
+    """Kilometres, or miles for the imperial system."""
+    return metres / 1000.0 if system == METRIC else metres * FT_PER_M / FT_PER_MILE
+
+
+def speed_value(kmh, system):
+    """km/h, or mph for the imperial system."""
+    return kmh if system == METRIC else kmh * MPH_PER_KMH
 
 
 def fmt_lap(ms):

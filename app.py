@@ -4,6 +4,7 @@ Run:  python app.py [path\to\replay.acreplay]
 
 Needs only Python 3.9+ with Tkinter (included in the standard Windows installer).
 """
+import json
 import os
 import sys
 import tkinter as tk
@@ -14,6 +15,35 @@ import analysis
 
 COLORS = ["#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd",
           "#8c564b", "#e377c2", "#17becf", "#bcbd22", "#7f7f7f"]
+CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".ac_overtake_finder.json")
+
+
+def load_units():
+    """The unit system chosen last time (metric if nothing was saved)."""
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as fh:
+            value = json.load(fh).get("units")
+        if value in analysis.UNIT_NAMES:
+            return value
+    except (OSError, ValueError, AttributeError):
+        pass
+    return analysis.METRIC
+
+
+def save_units(system):
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
+            json.dump({"units": system}, fh)
+    except OSError:
+        pass  # not being able to remember the choice is not worth an error
+
+
+def nice_step(top):
+    """A round grid step that gives at most about six lines up to `top`."""
+    for step in (10, 20, 50, 100, 200, 250, 500, 1000, 2000, 5000, 10000, 20000, 50000):
+        if top / step <= 6:
+            return step
+    return 100000
 
 
 def default_replay_dir():
@@ -32,6 +62,7 @@ class App(tk.Tk):
         self.model = None
         self.gap_series = []
         self.frame = 0
+        self.units = load_units()
         self._build()
 
     # ------------------------------------------------------------------ UI
@@ -39,6 +70,17 @@ class App(tk.Tk):
         top = ttk.Frame(self, padding=8)
         top.pack(fill="x")
         ttk.Button(top, text="Open replay...", command=self.open_dialog).pack(side="left")
+
+        # Unit system toggle, top right
+        units_box = ttk.Frame(top)
+        units_box.pack(side="right")
+        self.units_var = tk.StringVar(value=self.units)
+        ttk.Label(units_box, text="Units:").pack(side="left", padx=(0, 6))
+        ttk.Radiobutton(units_box, text="Metric (m, km, km/h)", variable=self.units_var,
+                        value=analysis.METRIC, command=self.on_units_changed).pack(side="left")
+        ttk.Radiobutton(units_box, text="Imperial (ft, mi, mph)", variable=self.units_var,
+                        value=analysis.IMPERIAL, command=self.on_units_changed).pack(side="left", padx=(8, 0))
+
         self.path_var = tk.StringVar(value="No replay loaded")
         ttk.Label(top, textvariable=self.path_var).pack(side="left", padx=10)
 
@@ -74,14 +116,13 @@ class App(tk.Tk):
         self.frame_var = tk.StringVar(value="Frame - / -")
         ttk.Label(stand, textvariable=self.frame_var).pack(anchor="w")
 
-        scols = ("pos", "driver", "lap", "ahead", "leader", "speed", "dist")
+        scols = ("pos", "driver", "lap", "ahead", "leader", "speed", "dist", "distlong")
         self.stand_tree = ttk.Treeview(stand, columns=scols, show="headings", height=7)
-        for key, text, width in (("pos", "Pos", 40), ("driver", "Driver", 220),
-                                 ("lap", "Lap", 50),
-                                 ("ahead", "Gap to car ahead (m)", 150),
-                                 ("leader", "Gap to leader (m)", 140),
-                                 ("speed", "Speed (km/h)", 90),
-                                 ("dist", "Distance (m)", 100)):
+        # Headings that carry a unit are set by _apply_unit_headings().
+        for key, text, width in (("pos", "Pos", 40), ("driver", "Driver", 200),
+                                 ("lap", "Lap", 45), ("ahead", "", 140),
+                                 ("leader", "", 130), ("speed", "", 90),
+                                 ("dist", "", 100), ("distlong", "", 100)):
             self.stand_tree.heading(key, text=text)
             self.stand_tree.column(key, width=width, anchor="w" if key == "driver" else "center")
         self.stand_tree.pack(fill="both", expand=True)
@@ -102,6 +143,31 @@ class App(tk.Tk):
 
         self.bind("<Left>", lambda e: self.step(-10))
         self.bind("<Right>", lambda e: self.step(10))
+        self._apply_unit_headings()
+
+    # --------------------------------------------------------------- units
+    def _apply_unit_headings(self):
+        short, long_, speed = analysis.UNIT_NAMES[self.units]
+        head = self.stand_tree.heading
+        head("ahead", text="Gap to car ahead (%s)" % short)
+        head("leader", text="Gap to leader (%s)" % short)
+        head("speed", text="Speed (%s)" % speed)
+        head("dist", text="Distance (%s)" % short)
+        head("distlong", text="Distance (%s)" % long_)
+        self.drivers_tree.heading("km", text="Driven (%s)" % long_)
+
+    def on_units_changed(self):
+        self.units = self.units_var.get()
+        save_units(self.units)
+        self._apply_unit_headings()
+        if self.model:
+            self.fill_drivers()
+            self.set_frame(self.frame)
+            self.draw_chart()
+
+    def _gap_text(self, metres):
+        value = analysis.short_length(metres, self.units)
+        return ("%.1f" if self.units == analysis.METRIC else "%.0f") % value
 
     # ------------------------------------------------------------- loading
     def open_dialog(self):
@@ -173,7 +239,7 @@ class App(tk.Tk):
         for car in analysis.classification(self.replay, final):
             if car.has_positions:
                 pos += 1
-                km = "%.2f" % (final[car.index] / 1000.0)
+                km = "%.2f" % analysis.long_length(final[car.index], self.units)
                 times = "  |  ".join(analysis.fmt_lap(ms) for ms in car.lap_times_ms) or "-"
                 rank = pos
             else:
@@ -203,12 +269,14 @@ class App(tk.Tk):
         tree = self.stand_tree
         tree.delete(*tree.get_children())
         for s in self.model.standings(frame):
-            tree.insert("", "end", values=(s.position, s.driver,
-                                           "-" if s.lap is None else s.lap,
-                                           "-" if s.position == 1 else "%.1f" % s.gap_ahead_m,
-                                           "-" if s.position == 1 else "%.1f" % s.gap_leader_m,
-                                           "-" if s.speed_kmh is None else "%.0f" % s.speed_kmh,
-                                           "%.0f" % s.progress_m))
+            tree.insert("", "end", values=(
+                s.position, s.driver,
+                "-" if s.lap is None else s.lap,
+                "-" if s.position == 1 else self._gap_text(s.gap_ahead_m),
+                "-" if s.position == 1 else self._gap_text(s.gap_leader_m),
+                "-" if s.speed_kmh is None else "%.0f" % analysis.speed_value(s.speed_kmh, self.units),
+                "%.0f" % analysis.short_length(s.progress_m, self.units),
+                "%.2f" % analysis.long_length(s.progress_m, self.units)))
         self.draw_cursor()
 
     # --------------------------------------------------------------- chart
@@ -229,20 +297,24 @@ class App(tk.Tk):
         if x1 - x0 < 50 or y1 - y0 < 30:
             return
         n = self.model.frames
-        top = max(max(s) for s in self.gap_series if s is not None) or 1.0
-        step = 50 if top <= 300 else 100 if top <= 800 else 250
+        unit = analysis.UNIT_NAMES[self.units][0]
+        scale = analysis.short_length(1.0, self.units)       # display units per metre
+        top = (max(max(s) for s in self.gap_series if s is not None) * scale) or 1.0
+        step = nice_step(top)
         ymax = (int(top / step) + 1) * step
         for v in range(0, ymax + 1, step):
             y = y0 + (y1 - y0) * v / ymax
             c.create_line(x0, y, x1, y, fill="#e6e6e6")
-            c.create_text(x0 - 6, y, anchor="e", text="%d m" % v, fill="#555555", font=("TkDefaultFont", 8))
+            c.create_text(x0 - 6, y, anchor="e", text="%d %s" % (v, unit), fill="#555555",
+                          font=("TkDefaultFont", 8))
         stride = max(1, n // max(1, (x1 - x0)))
         for i, series in enumerate(self.gap_series):
             if series is None:
                 continue
             pts = []
             for f in range(0, n, stride):
-                pts.extend((x0 + (x1 - x0) * f / (n - 1), y0 + (y1 - y0) * series[f] / ymax))
+                pts.extend((x0 + (x1 - x0) * f / (n - 1),
+                            y0 + (y1 - y0) * series[f] * scale / ymax))
             c.create_line(*pts, fill=COLORS[i % len(COLORS)], width=2)
         c.create_text(x0, y1 + 12, anchor="w", text=analysis.fmt_clock(0), fill="#555555", font=("TkDefaultFont", 8))
         c.create_text(x1, y1 + 12, anchor="e", text=analysis.fmt_clock(self.model.time_s(n - 1)),

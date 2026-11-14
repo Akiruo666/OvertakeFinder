@@ -184,6 +184,27 @@ def _decode_frames(buf, base, stride, count):
 _ZERO = (0.0, 0.0, 0.0)
 
 
+def _usable_laps(lap_index, lap_time_ms):
+    """Per-frame 0-based lap numbers, or None when the file has no lap data.
+
+    Cars that are only seen over the network (online replays) have a lap field
+    that is always 0 and an empty lap timer. Showing "lap 1" for them for the
+    whole race would be wrong, so they get None. If the lap number never
+    changes but the lap timer restarts, the laps are counted from the timer.
+    """
+    if len(set(lap_index)) > 1:
+        return lap_index
+    if not any(lap_time_ms):
+        return None
+    out, lap, prev = [], 0, lap_time_ms[0]
+    for t in lap_time_ms:
+        if t + 1000 < prev:          # the lap timer jumped back: new lap
+            lap += 1
+        prev = t
+        out.append(lap)
+    return out
+
+
 def _plausible_positions(positions, limit=400):
     """True if the points look like a car driving around (not random bytes)."""
     pts = positions[:limit]
@@ -244,6 +265,7 @@ def _parse_v16(buf):
         car = Car(index, model, driver, nation, team, skin, frame_count, wings, stride, laps)
         for key, value in _decode_frames(buf, base, stride, frame_count).items():
             setattr(car, key, value)
+        car.lap_index = _usable_laps(car.lap_index, car.lap_time_ms)
         car.has_positions = any(p != _ZERO for p in car.positions)
         if car.has_positions:
             _check_car(car.positions, driver)
