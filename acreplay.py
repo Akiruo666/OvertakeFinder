@@ -77,6 +77,7 @@ class Car:
     brake: bytes = None
     gear: bytes = None
     tire_dirt: list = None      # highest dirt value of the four tyres per frame
+    has_positions: bool = True  # False if every position in the file is (0, 0, 0)
 
     @property
     def total_time_ms(self):
@@ -180,6 +181,9 @@ def _decode_frames(buf, base, stride, count):
     )
 
 
+_ZERO = (0.0, 0.0, 0.0)
+
+
 def _plausible_positions(positions, limit=400):
     """True if the points look like a car driving around (not random bytes)."""
     pts = positions[:limit]
@@ -240,8 +244,12 @@ def _parse_v16(buf):
         car = Car(index, model, driver, nation, team, skin, frame_count, wings, stride, laps)
         for key, value in _decode_frames(buf, base, stride, frame_count).items():
             setattr(car, key, value)
-        _check_car(car.positions, driver)
+        car.has_positions = any(p != _ZERO for p in car.positions)
+        if car.has_positions:
+            _check_car(car.positions, driver)
         cars.append(car)
+    if not any(c.has_positions for c in cars):
+        raise ReplayError("No car in this file has any position data.")
 
     replay = Replay("", version, "exact layout", interval, weather, track, layout, cars)
     if version != SUPPORTED_VERSION:
@@ -409,6 +417,12 @@ def load_bytes(buf, path=""):
         if attempts:
             replay.warnings.append(
                 "The standard reader failed (%s); fell back to '%s'." % (attempts[0][1], name))
+        empty = [c for c in replay.cars if not c.has_positions]
+        if empty:
+            replay.warnings.append(
+                "%d of %d cars have no position data in this file (every frame is empty), "
+                "so they are listed but left out of the standings and the chart."
+                % (len(empty), len(replay.cars)))
         counts = {c.frame_count for c in replay.cars}
         if len(counts) > 1:
             replay.warnings.append(

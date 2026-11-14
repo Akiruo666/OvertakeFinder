@@ -168,13 +168,19 @@ class App(tk.Tk):
     def fill_drivers(self):
         tree = self.drivers_tree
         tree.delete(*tree.get_children())
-        final = [p[-1] for p in self.model.progress]
-        for pos, car in enumerate(analysis.classification(self.replay, final), start=1):
-            km = self.model.progress[car.index][-1] / 1000.0
-            times = "  |  ".join(analysis.fmt_lap(ms) for ms in car.lap_times_ms) or "-"
-            tree.insert("", "end", values=(pos, car.driver, car.nation, car.team or car.skin,
-                                           len(car.lap_times_ms), analysis.fmt_lap(car.best_lap_ms),
-                                           times, "%.2f" % km))
+        final = [p[-1] if p is not None else None for p in self.model.progress]
+        pos = 0
+        for car in analysis.classification(self.replay, final):
+            if car.has_positions:
+                pos += 1
+                km = "%.2f" % (final[car.index] / 1000.0)
+                times = "  |  ".join(analysis.fmt_lap(ms) for ms in car.lap_times_ms) or "-"
+                rank = pos
+            else:
+                km, times, rank = "-", "no position data in this replay", "-"
+            tree.insert("", "end", values=(rank, car.driver or "(no name)", car.nation,
+                                           car.team or car.skin, len(car.lap_times_ms),
+                                           analysis.fmt_lap(car.best_lap_ms), times, km))
 
     # --------------------------------------------------------- interaction
     def step(self, delta):
@@ -223,7 +229,7 @@ class App(tk.Tk):
         if x1 - x0 < 50 or y1 - y0 < 30:
             return
         n = self.model.frames
-        top = max(max(s) for s in self.gap_series) or 1.0
+        top = max(max(s) for s in self.gap_series if s is not None) or 1.0
         step = 50 if top <= 300 else 100 if top <= 800 else 250
         ymax = (int(top / step) + 1) * step
         for v in range(0, ymax + 1, step):
@@ -232,6 +238,8 @@ class App(tk.Tk):
             c.create_text(x0 - 6, y, anchor="e", text="%d m" % v, fill="#555555", font=("TkDefaultFont", 8))
         stride = max(1, n // max(1, (x1 - x0)))
         for i, series in enumerate(self.gap_series):
+            if series is None:
+                continue
             pts = []
             for f in range(0, n, stride):
                 pts.extend((x0 + (x1 - x0) * f / (n - 1), y0 + (y1 - y0) * series[f] / ymax))
@@ -241,6 +249,8 @@ class App(tk.Tk):
                       fill="#555555", font=("TkDefaultFont", 8))
         lx = x0
         for i, car in enumerate(self.replay.cars):
+            if self.gap_series[i] is None:
+                continue
             c.create_rectangle(lx, 6, lx + 10, 16, fill=COLORS[i % len(COLORS)], outline="")
             label = car.driver if len(car.driver) < 18 else car.driver[:16] + ".."
             tid = c.create_text(lx + 14, 11, anchor="w", text=label, font=("TkDefaultFont", 8))

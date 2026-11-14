@@ -31,6 +31,10 @@ The program checks each file and tries, in order:
 
 The line under the file name shows which method was used. If neither works, the program offers to save a small **diagnostic report** (text file). Send that file (or the replay itself) to get support for the format added.
 
+## Cars without position data
+
+Some replays (seen in an online Practice session) list many drivers but only record movement for some of them; every frame of the other cars is empty. Those cars are shown at the bottom of the drivers table as "no position data", and are left out of the standings and the chart. A note under the file name says how many.
+
 ## Notes
 
 - Gaps use the distance each car has driven, corrected for the starting grid. They become exact once the track centreline (`fast_lane.ai`) is used.

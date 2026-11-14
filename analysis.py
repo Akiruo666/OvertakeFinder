@@ -45,32 +45,43 @@ def grid_offsets(replay):
     direction the field first moves in.
     """
     n = replay.frame_count
-    starts = [c.positions[0] for c in replay.cars]
+    cars = [c for c in replay.cars if c.has_positions]
+    if not cars:
+        return [0.0] * len(replay.cars)
     direction = (0.0, 0.0)
     for f in range(1, n):
-        dx = sum(c.positions[f][0] - c.positions[0][0] for c in replay.cars)
-        dz = sum(c.positions[f][2] - c.positions[0][2] for c in replay.cars)
-        if math.hypot(dx, dz) > 10 * len(replay.cars):
+        dx = sum(c.positions[f][0] - c.positions[0][0] for c in cars)
+        dz = sum(c.positions[f][2] - c.positions[0][2] for c in cars)
+        if math.hypot(dx, dz) > 10 * len(cars):
             norm = math.hypot(dx, dz)
             direction = (dx / norm, dz / norm)
             break
     if direction == (0.0, 0.0):
-        return [0.0] * len(starts)
-    along = [s[0] * direction[0] + s[2] * direction[1] for s in starts]
-    front = max(along)
-    return [a - front for a in along]
+        return [0.0] * len(replay.cars)
+    along = {c.index: c.positions[0][0] * direction[0] + c.positions[0][2] * direction[1]
+             for c in cars}
+    front = max(along.values())
+    return [along[c.index] - front if c.index in along else 0.0 for c in replay.cars]
 
 
 class RaceModel:
-    """Pre-computed progress for each car at every frame."""
+    """Pre-computed progress for each car at every frame.
+
+    Cars without any position data (every frame empty) are not part of the
+    model: `progress` and the gap series hold None for them.
+    """
 
     def __init__(self, replay):
         self.replay = replay
         self.frames = replay.frame_count
         self.race_laps = max((len(c.lap_times_ms) for c in replay.cars), default=0)
+        self.active = [c.index for c in replay.cars if c.has_positions]
         offsets = grid_offsets(replay)
         self.progress = []
         for car, off in zip(replay.cars, offsets):
+            if not car.has_positions:
+                self.progress.append(None)
+                continue
             dist = driven_distance(car.positions[:self.frames])
             self.progress.append([d + off for d in dist])
 
@@ -86,8 +97,7 @@ class RaceModel:
 
     def standings(self, frame):
         frame = max(0, min(frame, self.frames - 1))
-        order = sorted(range(len(self.replay.cars)),
-                       key=lambda i: self.progress[i][frame], reverse=True)
+        order = sorted(self.active, key=lambda i: self.progress[i][frame], reverse=True)
         leader = self.progress[order[0]][frame]
         rows = []
         prev = leader
@@ -102,20 +112,25 @@ class RaceModel:
         return rows
 
     def gap_to_leader_series(self):
-        """For each car a list with its gap to the leader (metres) per frame."""
-        series = [[] for _ in self.replay.cars]
+        """Per car a list with its gap to the leader (metres) per frame.
+
+        Cars without position data get None instead of a list.
+        """
+        series = [[] if p is not None else None for p in self.progress]
         for f in range(self.frames):
-            lead = max(p[f] for p in self.progress)
-            for i, p in enumerate(self.progress):
-                series[i].append(lead - p[f])
+            lead = max(self.progress[i][f] for i in self.active)
+            for i in self.active:
+                series[i].append(lead - self.progress[i][f])
         return series
 
 
 def classification(replay, final_progress=None):
     """Cars sorted by laps completed (desc), total time (asc), then distance driven."""
     def key(c):
-        dist = -final_progress[c.index] if final_progress else 0
-        return (-len(c.lap_times_ms),
+        has = final_progress is not None and final_progress[c.index] is not None
+        dist = -final_progress[c.index] if has else 0
+        return (not c.has_positions,       # cars without data go last
+                -len(c.lap_times_ms),
                 c.total_time_ms if c.lap_times_ms else 10**12,
                 dist)
     return sorted(replay.cars, key=key)
