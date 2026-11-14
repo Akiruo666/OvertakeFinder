@@ -8,6 +8,10 @@ accurate to within a percent or two; sideways movement adds a little error.
 import math
 from dataclasses import dataclass
 
+# A car cannot move this far in one recording step (30 ms -> 500 m/s); larger
+# jumps are teleports (pit reset, replay glitch) and are not counted as driving.
+MAX_STEP_M = 15.0
+
 
 @dataclass
 class Standing:
@@ -17,6 +21,8 @@ class Standing:
     progress_m: float
     gap_ahead_m: float
     gap_leader_m: float
+    lap: int = None          # 1-based, None in limited mode
+    speed_kmh: float = None
 
 
 def driven_distance(positions):
@@ -24,7 +30,9 @@ def driven_distance(positions):
     total = 0.0
     out = [0.0]
     for a, b in zip(positions, positions[1:]):
-        total += math.dist(a, b)
+        d = math.dist(a, b)
+        if d <= MAX_STEP_M:
+            total += d
         out.append(total)
     return out
 
@@ -38,8 +46,6 @@ def grid_offsets(replay):
     """
     n = replay.frame_count
     starts = [c.positions[0] for c in replay.cars]
-    # Direction of travel: average movement of all cars over the first
-    # frames in which anybody has moved a few metres.
     direction = (0.0, 0.0)
     for f in range(1, n):
         dx = sum(c.positions[f][0] - c.positions[0][0] for c in replay.cars)
@@ -61,11 +67,22 @@ class RaceModel:
     def __init__(self, replay):
         self.replay = replay
         self.frames = replay.frame_count
+        self.race_laps = max((len(c.lap_times_ms) for c in replay.cars), default=0)
         offsets = grid_offsets(replay)
         self.progress = []
         for car, off in zip(replay.cars, offsets):
             dist = driven_distance(car.positions[:self.frames])
             self.progress.append([d + off for d in dist])
+
+    def time_s(self, frame):
+        return self.replay.time_s(frame)
+
+    def lap_at(self, car_index, frame):
+        car = self.replay.cars[car_index]
+        if car.lap_index is None:
+            return None
+        lap = car.lap_index[frame] + 1
+        return min(lap, self.race_laps) if self.race_laps else lap
 
     def standings(self, frame):
         frame = max(0, min(frame, self.frames - 1))
@@ -75,9 +92,12 @@ class RaceModel:
         rows = []
         prev = leader
         for rank, i in enumerate(order, start=1):
+            car = self.replay.cars[i]
             p = self.progress[i][frame]
-            rows.append(Standing(rank, i, self.replay.cars[i].driver, p,
-                                 0.0 if rank == 1 else prev - p, leader - p))
+            speed = car.speed_kmh[frame] if car.speed_kmh is not None else None
+            rows.append(Standing(rank, i, car.driver, p,
+                                 0.0 if rank == 1 else prev - p, leader - p,
+                                 self.lap_at(i, frame), speed))
             prev = p
         return rows
 
@@ -91,10 +111,14 @@ class RaceModel:
         return series
 
 
-def classification(replay):
-    """Cars sorted by laps completed (desc) then total time (asc)."""
-    return sorted(replay.cars,
-                  key=lambda c: (-len(c.laps), c.total_time_ms if c.laps else 10**12))
+def classification(replay, final_progress=None):
+    """Cars sorted by laps completed (desc), total time (asc), then distance driven."""
+    def key(c):
+        dist = -final_progress[c.index] if final_progress else 0
+        return (-len(c.lap_times_ms),
+                c.total_time_ms if c.lap_times_ms else 10**12,
+                dist)
+    return sorted(replay.cars, key=key)
 
 
 def fmt_lap(ms):
@@ -102,3 +126,13 @@ def fmt_lap(ms):
         return "-"
     minutes, rest = divmod(int(ms), 60_000)
     return "%d:%06.3f" % (minutes, rest / 1000)
+
+
+def fmt_clock(seconds):
+    """Replay clock, e.g. 1:23.4 (hours only when needed)."""
+    tenths = int(round(seconds * 10))
+    minutes, rest = divmod(tenths, 600)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return "%d:%02d:%04.1f" % (hours, minutes, rest / 10)
+    return "%d:%04.1f" % (minutes, rest / 10)

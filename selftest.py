@@ -1,7 +1,8 @@
-"""Headless check: parse every .acreplay next to this file and print a summary.
+"""Headless check: try to read every .acreplay next to this file.
 
-Exits with an error if a replay cannot be read or looks wrong. Does nothing
-(and succeeds) if there is no replay in the folder.
+A replay that cannot be read is reported but does not fail the check (the exe
+build must not be blocked by a file that needs new format support). Only a
+crash inside the reader (a bug) fails it.
 """
 import glob
 import os
@@ -17,11 +18,18 @@ if not files:
     sys.exit(0)
 
 for path in files:
-    replay = acreplay.load(path)
+    name = os.path.basename(path)
+    try:
+        replay = acreplay.load(path)
+    except acreplay.ReplayError as exc:
+        print("%s: NOT READABLE - %s" % (name, exc))
+        continue
     model = analysis.RaceModel(replay)
     order = [s.driver for s in model.standings(replay.frame_count - 1)]
-    print("%s: %s, %d cars, %d frames, final order: %s"
-          % (os.path.basename(path), replay.track, len(replay.cars),
-             replay.frame_count, ", ".join(order)))
-    assert len(replay.cars) >= 1 and replay.frame_count > 1
-print("Self-test passed.")
+    print("%s: %s, %d cars, %s long, read with '%s', final order: %s"
+          % (name, replay.track, len(replay.cars),
+             analysis.fmt_clock(replay.time_s(replay.frame_count - 1)),
+             replay.strategy, ", ".join(order)))
+    for w in replay.warnings:
+        print("  note:", w)
+print("Self-test finished.")

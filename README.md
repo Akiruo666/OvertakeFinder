@@ -19,12 +19,20 @@ Windows SmartScreen or antivirus may warn about an unsigned program that was jus
 ## What you see
 
 - **Drivers and lap times**: classification (laps completed, then total time), best lap, every lap time, distance driven.
-- **Standings at selected moment**: slider, buttons or the left/right arrow keys move through the replay; shows position, gap to the car ahead and gap to the leader in metres.
+- **Standings at selected moment**: slider, buttons or the left/right arrow keys move through the replay; shows replay time, lap, speed, and the gap to the car ahead and to the leader in metres.
 - **Gap chart**: gap to the leader for every car over the whole replay; click it to jump to that moment.
+
+## How replays are opened
+
+The program checks each file and tries, in order:
+
+1. **Exact layout**: the known layout (format version 16). The frame size is worked out per car, because it depends on the car (number of wing/aero elements), and tracks with extra objects are handled. A different version number with the same layout also opens, with a note.
+2. **Scan (limited)**: if the exact layout does not fit, the file is searched for car blocks and the frame size and position are detected from the data. This gives positions and gaps only: no lap numbers or speeds, and times assume 30 ms per frame.
+
+The line under the file name shows which method was used. If neither works, the program offers to save a small **diagnostic report** (text file). Send that file (or the replay itself) to get support for the format added.
 
 ## Notes
 
 - Gaps use the distance each car has driven, corrected for the starting grid. They become exact once the track centreline (`fast_lane.ai`) is used.
-- Moments are shown as replay frame numbers. Converting a frame to the time AC displays still has to be worked out.
-- The replay format is reverse engineered; only format version 16 has been verified.
-- `python selftest.py` parses any `.acreplay` in the folder without opening a window.
+- The replay format is reverse engineered; only format version 16 has been verified against real files.
+- `python selftest.py` tries to read every `.acreplay` in the folder without opening a window.

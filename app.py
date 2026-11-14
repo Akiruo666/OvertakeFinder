@@ -74,12 +74,14 @@ class App(tk.Tk):
         self.frame_var = tk.StringVar(value="Frame - / -")
         ttk.Label(stand, textvariable=self.frame_var).pack(anchor="w")
 
-        scols = ("pos", "driver", "ahead", "leader", "dist")
+        scols = ("pos", "driver", "lap", "ahead", "leader", "speed", "dist")
         self.stand_tree = ttk.Treeview(stand, columns=scols, show="headings", height=7)
-        for key, text, width in (("pos", "Pos", 40), ("driver", "Driver", 230),
-                                 ("ahead", "Gap to car ahead (m)", 160),
-                                 ("leader", "Gap to leader (m)", 150),
-                                 ("dist", "Distance (m)", 110)):
+        for key, text, width in (("pos", "Pos", 40), ("driver", "Driver", 220),
+                                 ("lap", "Lap", 50),
+                                 ("ahead", "Gap to car ahead (m)", 150),
+                                 ("leader", "Gap to leader (m)", 140),
+                                 ("speed", "Speed (km/h)", 90),
+                                 ("dist", "Distance (m)", 100)):
             self.stand_tree.heading(key, text=text)
             self.stand_tree.column(key, width=width, anchor="w" if key == "driver" else "center")
         self.stand_tree.pack(fill="both", expand=True)
@@ -96,7 +98,7 @@ class App(tk.Tk):
 
         ttk.Label(self, padding=(8, 0, 8, 6), foreground="#666666",
                   text="Gaps are measured along the distance each car has driven, corrected "
-                       "for the starting grid. Positions are shown by replay frame number.").pack(fill="x")
+                       "for the starting grid. Times are replay time from the start of the recording.").pack(fill="x")
 
         self.bind("<Left>", lambda e: self.step(-10))
         self.bind("<Right>", lambda e: self.step(10))
@@ -120,7 +122,11 @@ class App(tk.Tk):
                 raise acreplay.ReplayError("The replay contains no frames.")
             model = analysis.RaceModel(replay)
             series = model.gap_to_leader_series()
-        except (acreplay.ReplayError, OSError) as exc:
+        except acreplay.ReplayError as exc:
+            self.path_var.set("No replay loaded")
+            self._offer_report(path, exc)
+            return
+        except OSError as exc:
             self.path_var.set("No replay loaded")
             messagebox.showerror("Cannot open replay", str(exc))
             return
@@ -129,22 +135,45 @@ class App(tk.Tk):
         self.replay, self.model, self.gap_series = replay, model, series
         self.path_var.set(path)
         layout = replay.layout or "-"
-        self.info_var.set("Track: %s (layout %s)   Weather: %s   Cars: %d   Frames: %d   Format v%d"
-                          % (replay.track, layout, replay.weather, len(replay.cars),
-                             replay.frame_count, replay.version))
+        text = ("Track: %s (layout %s)   Weather: %s   Cars: %d   Length: %s   Format v%d, read with: %s"
+                % (replay.track, layout, replay.weather, len(replay.cars),
+                   analysis.fmt_clock(replay.time_s(replay.frame_count - 1)),
+                   replay.version, replay.strategy))
+        if replay.warnings:
+            text += "\nNote: " + " ".join(replay.warnings)
+        self.info_var.set(text)
         self.fill_drivers()
         self.scale.configure(to=replay.frame_count - 1)
         self.set_frame(0)
         self.draw_chart()
 
+    def _offer_report(self, path, exc):
+        """Explain the failure and offer a small text report that can be shared."""
+        message = str(exc)
+        if exc.report and messagebox.askyesno(
+                "Cannot open replay",
+                message + "\n\nSave a diagnostic report? It is a small text file with "
+                "technical details of this replay (track, car and driver names, some raw "
+                "bytes) that helps to add support for it."):
+            target = filedialog.asksaveasfilename(
+                title="Save diagnostic report", defaultextension=".txt",
+                initialfile=os.path.basename(path) + ".diagnostic.txt",
+                filetypes=[("Text file", "*.txt")])
+            if target:
+                with open(target, "w", encoding="utf-8") as fh:
+                    fh.write(exc.report + "\n")
+        elif not exc.report:
+            messagebox.showerror("Cannot open replay", message)
+
     def fill_drivers(self):
         tree = self.drivers_tree
         tree.delete(*tree.get_children())
-        for pos, car in enumerate(analysis.classification(self.replay), start=1):
+        final = [p[-1] for p in self.model.progress]
+        for pos, car in enumerate(analysis.classification(self.replay, final), start=1):
             km = self.model.progress[car.index][-1] / 1000.0
-            times = "  |  ".join(analysis.fmt_lap(ms) for _, ms in car.laps) or "-"
+            times = "  |  ".join(analysis.fmt_lap(ms) for ms in car.lap_times_ms) or "-"
             tree.insert("", "end", values=(pos, car.driver, car.nation, car.team or car.skin,
-                                           len(car.laps), analysis.fmt_lap(car.best_lap_ms),
+                                           len(car.lap_times_ms), analysis.fmt_lap(car.best_lap_ms),
                                            times, "%.2f" % km))
 
     # --------------------------------------------------------- interaction
@@ -161,13 +190,18 @@ class App(tk.Tk):
         self.frame = frame
         if not from_scale:
             self.scale.set(frame)
-        self.frame_var.set("Frame %d / %d" % (frame, self.model.frames - 1))
+        self.frame_var.set("Replay time %s of %s   (frame %d / %d)" % (
+            analysis.fmt_clock(self.model.time_s(frame)),
+            analysis.fmt_clock(self.model.time_s(self.model.frames - 1)),
+            frame, self.model.frames - 1))
         tree = self.stand_tree
         tree.delete(*tree.get_children())
         for s in self.model.standings(frame):
             tree.insert("", "end", values=(s.position, s.driver,
+                                           "-" if s.lap is None else s.lap,
                                            "-" if s.position == 1 else "%.1f" % s.gap_ahead_m,
                                            "-" if s.position == 1 else "%.1f" % s.gap_leader_m,
+                                           "-" if s.speed_kmh is None else "%.0f" % s.speed_kmh,
                                            "%.0f" % s.progress_m))
         self.draw_cursor()
 
@@ -202,8 +236,9 @@ class App(tk.Tk):
             for f in range(0, n, stride):
                 pts.extend((x0 + (x1 - x0) * f / (n - 1), y0 + (y1 - y0) * series[f] / ymax))
             c.create_line(*pts, fill=COLORS[i % len(COLORS)], width=2)
-        c.create_text(x0, y1 + 12, anchor="w", text="frame 0", fill="#555555", font=("TkDefaultFont", 8))
-        c.create_text(x1, y1 + 12, anchor="e", text="frame %d" % (n - 1), fill="#555555", font=("TkDefaultFont", 8))
+        c.create_text(x0, y1 + 12, anchor="w", text=analysis.fmt_clock(0), fill="#555555", font=("TkDefaultFont", 8))
+        c.create_text(x1, y1 + 12, anchor="e", text=analysis.fmt_clock(self.model.time_s(n - 1)),
+                      fill="#555555", font=("TkDefaultFont", 8))
         lx = x0
         for i, car in enumerate(self.replay.cars):
             c.create_rectangle(lx, 6, lx + 10, 16, fill=COLORS[i % len(COLORS)], outline="")
