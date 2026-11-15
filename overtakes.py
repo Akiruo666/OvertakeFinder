@@ -17,9 +17,12 @@ One or two wheels over the white line is legal and is not marked.
 """
 from dataclasses import dataclass, field
 
+import surface
+
 DEADBAND_M = 3.0        # a car must be this far in front before it counts as passed
 MAX_GAP_M = 60.0        # ignore "passes" between cars that were never this close
 WINDOW_S = 3.0          # off-track events within this time of the pass count
+OFF_SAMPLES = 3         # with a road model: samples (every 2nd frame) with all four wheels off
 OFF_FRAMES = 5          # all four wheels off for at least this many frames (150 ms)
 # Contact: speed lost within CONTACT_SPAN frames (~0.2 s). Heavy braking loses at
 # most about 19 km/h in that time (measured), so a bigger loss without brake
@@ -97,6 +100,9 @@ def find_overtakes(model, sample=3):
                 state = new
                 last_cross = None
     found.sort()
+    offs = {}
+    if model.roadmap is not None:
+        offs = {i: surface.off_track_frames(model.roadmap, replay.cars[i], step=2) for i in active}
     contacts = {i: contact_frames(replay.cars[i]) for i in active}
     out = []
     for f, over, under, q in found:
@@ -104,6 +110,10 @@ def find_overtakes(model, sample=3):
         lo, hi = max(0, f - window), min(n, f + window)
         o = Overtake(f, replay.time_s(f), model.lap_at(over, f), over, under, lapping=(q != 0))
         for who, attr in ((over, "overtaker_off"), (under, "passed_off")):
+            if who in offs:
+                if sum(1 for fr in offs[who] if lo <= fr < hi) >= OFF_SAMPLES:
+                    setattr(o, attr, True)
+                continue
             dirt = replay.cars[who].tire_dirt_min
             if dirt is not None and _run([v > 0 for v in dirt], lo, hi, OFF_FRAMES):
                 setattr(o, attr, True)

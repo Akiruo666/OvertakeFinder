@@ -107,3 +107,22 @@ def find_ai_lines(game_folder, track, layout=""):
 
     found.sort(key=rank)
     return found, ""
+
+
+def find_track_models(game_folder, track, layout=""):
+    """The .kn5 model files of a track (in the track folder itself and one level
+    below), layout-named files first. A track can split its model over several."""
+    track_dir = os.path.join(game_folder, "content", "tracks", track)
+    if not track or not os.path.isdir(track_dir):
+        return []
+    found = []
+    for dirpath, dirs, files in os.walk(track_dir):
+        depth = 0 if dirpath == track_dir else len(os.path.relpath(dirpath, track_dir).split(os.sep))
+        if depth >= 2:
+            dirs[:] = []
+        for name in files:
+            if name.lower().endswith(".kn5"):
+                found.append(os.path.join(dirpath, name))
+    want = (layout or "").lower()
+    found.sort(key=lambda p: (0 if want and want in os.path.basename(p).lower() else 1, p.lower()))
+    return found

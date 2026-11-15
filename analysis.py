@@ -7,9 +7,12 @@ accurate to within a percent or two; sideways movement adds a little error.
 """
 import math
 import os
+from struct import error as struct_error
 from dataclasses import dataclass
 
 import gamefolder
+import kn5
+import surface
 import trackdata
 
 # Smallest share of the recorded driving that must lie close to a racing line
@@ -104,6 +107,36 @@ def choose_line(replay, game_folder):
     return None, "No usable racing line for this track (%s)." % "; ".join(problems) + fallback
 
 
+ROAD_FIT_MIN = 0.8      # share of moving samples that must be on a road mesh
+
+
+def choose_roadmap(replay, game_folder):
+    """Load the track's road/kerb meshes from its .kn5 model(s) in the game folder.
+
+    Returns (roadmap, note); roadmap is None when there is no usable model (the
+    off-track check then relies on the tyre dirt values)."""
+    if not game_folder or not replay.track or replay.track == "?":
+        return None, ""
+    files = gamefolder.find_track_models(game_folder, replay.track, replay.layout)
+    if not files:
+        return None, "No track model (.kn5) found; off track is judged from tyre dirt."
+    tris_meshes = []
+    errors = []
+    for path in files:
+        try:
+            tris_meshes.extend(kn5.read_model(path)[1])
+        except (kn5.Kn5Error, OSError, struct_error) as exc:
+            errors.append("%s: %s" % (os.path.basename(path), exc))
+    roadmap = surface.RoadMap(tris_meshes)
+    if not roadmap.tris:
+        return None, "No road surface in the track model (%s); off track is judged from tyre dirt." % (
+            "; ".join(errors) or "no ROAD meshes")
+    fit = surface.fit_fraction(roadmap, replay)
+    if fit is not None and fit < ROAD_FIT_MIN:
+        return None, "Track model does not match the recorded driving (%.0f%% on road); off track is judged from tyre dirt." % (100 * fit)
+    return roadmap, "Road surface from %d model file(s) (all four wheels off = off track)." % len(files)
+
+
 class RaceModel:
     """Pre-computed progress for each car at every frame.
 
@@ -116,8 +149,9 @@ class RaceModel:
     model: `progress` and the gap series hold None for them.
     """
 
-    def __init__(self, replay, line=None):
+    def __init__(self, replay, line=None, roadmap=None):
         self.replay = replay
+        self.roadmap = roadmap
         self.frames = replay.frame_count
         self.race_laps = max((len(c.lap_times_ms) for c in replay.cars), default=0)
         self.active = [c.index for c in replay.cars if c.has_positions]

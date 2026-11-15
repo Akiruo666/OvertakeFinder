@@ -78,6 +78,7 @@ class App(tk.Tk):
         cfg = load_config()
         self.game_folder = gamefolder.normalize_game_folder(cfg.get("game_folder"))
         self.line_note = ""
+        self.road_note = ""
         self.overtakes = []
         self._build()
 
@@ -296,7 +297,8 @@ class App(tk.Tk):
             if replay.frame_count < 2:
                 raise acreplay.ReplayError("The replay contains no frames.")
             line, self.line_note = analysis.choose_line(replay, self.game_folder)
-            model = analysis.RaceModel(replay, line)
+            roadmap, self.road_note = analysis.choose_roadmap(replay, self.game_folder)
+            model = analysis.RaceModel(replay, line, roadmap)
             series = model.gap_to_leader_series()
             found = overtakes.find_overtakes(model)
         except acreplay.ReplayError as exc:
@@ -321,6 +323,8 @@ class App(tk.Tk):
                    analysis.fmt_clock(replay.time_s(replay.frame_count - 1)),
                    replay.version, replay.strategy))
         text += "\n" + self.line_note
+        if self.road_note:
+            text += "\n" + self.road_note
         if replay.warnings:
             text += "\nNote: " + " ".join(replay.warnings)
         self.info_var.set(text)
