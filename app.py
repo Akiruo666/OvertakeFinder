@@ -13,6 +13,7 @@ from tkinter import filedialog, messagebox, ttk
 import acreplay
 import analysis
 import gamefolder
+import overtakes
 
 COLORS = ["#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd",
           "#8c564b", "#e377c2", "#17becf", "#bcbd22", "#7f7f7f"]
@@ -67,7 +68,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("AC Overtake Finder - Race overview")
-        self.geometry("1000x820")
+        self.geometry("1000x940")
         self.minsize(820, 640)
         self.replay = None
         self.model = None
@@ -77,6 +78,7 @@ class App(tk.Tk):
         cfg = load_config()
         self.game_folder = gamefolder.normalize_game_folder(cfg.get("game_folder"))
         self.line_note = ""
+        self.overtakes = []
         self._build()
 
     # ------------------------------------------------------------------ UI
@@ -142,6 +144,29 @@ class App(tk.Tk):
             self.stand_tree.column(key, width=width, anchor="w" if key == "driver" else "center")
         self.stand_tree.pack(fill="both", expand=True)
         paned.add(stand, weight=2)
+
+        # Overtakes
+        ov = ttk.Labelframe(paned, text="Overtakes", padding=4)
+        obar = ttk.Frame(ov)
+        obar.pack(fill="x")
+        ttk.Label(obar, text="Driver:").pack(side="left")
+        self.driver_var = tk.StringVar(value=self.ALL_DRIVERS)
+        self.driver_box = ttk.Combobox(obar, textvariable=self.driver_var, state="readonly",
+                                       values=[self.ALL_DRIVERS], width=32)
+        self.driver_box.pack(side="left", padx=6)
+        self.driver_box.bind("<<ComboboxSelected>>", lambda e: self.fill_overtakes())
+        self.ov_count = tk.StringVar(value="")
+        ttk.Label(obar, textvariable=self.ov_count).pack(side="left", padx=10)
+        ocols = ("time", "lap", "who", "passed", "notes")
+        self.ov_tree = ttk.Treeview(ov, columns=ocols, show="headings", height=6, selectmode="extended")
+        for key, text, width in (("time", "Replay time", 90), ("lap", "Lap", 45),
+                                 ("who", "Overtaker", 200), ("passed", "Passed", 200),
+                                 ("notes", "Notes", 300)):
+            self.ov_tree.heading(key, text=text)
+            self.ov_tree.column(key, width=width, anchor="w" if key in ("who", "passed", "notes") else "center")
+        self.ov_tree.pack(fill="both", expand=True)
+        self.ov_tree.bind("<<TreeviewSelect>>", self._on_overtake_select)
+        paned.add(ov, weight=2)
 
         # Gap chart
         chart = ttk.Labelframe(paned, text="Gap to leader over the race (click to jump)", padding=4)
@@ -224,6 +249,35 @@ class App(tk.Tk):
         if self.replay is not None:        # use the new track data right away
             self.load(self.replay.path)
 
+    # ----------------------------------------------------------- overtakes
+    ALL_DRIVERS = "All drivers"
+
+    def fill_overtakes(self):
+        tree = self.ov_tree
+        tree.delete(*tree.get_children())
+        self.shown_overtakes = []
+        if not self.model:
+            return
+        cars = self.replay.cars
+        pick = self.driver_var.get()
+        for o in self.overtakes:
+            who, passed = cars[o.overtaker].driver, cars[o.passed].driver
+            if pick != self.ALL_DRIVERS and pick not in (who, passed):
+                continue
+            self.shown_overtakes.append(o)
+            tree.insert("", "end", values=(
+                analysis.fmt_clock(o.time_s), "-" if o.lap is None else o.lap, who, passed,
+                ", ".join(o.flags) if o.flags else ""))
+        self.ov_count.set("%d overtakes shown (of %d). Choose a driver to see only his overtakes "
+                          "and the ones he suffered." % (len(self.shown_overtakes), len(self.overtakes)))
+
+    def _on_overtake_select(self, _event=None):
+        sel = self.ov_tree.selection()
+        if sel and self.model:
+            idx = self.ov_tree.index(sel[0])
+            if idx < len(self.shown_overtakes):
+                self.set_frame(self.shown_overtakes[idx].frame)
+
     # ------------------------------------------------------------- loading
     def open_dialog(self):
         path = filedialog.askopenfilename(
@@ -244,6 +298,7 @@ class App(tk.Tk):
             line, self.line_note = analysis.choose_line(replay, self.game_folder)
             model = analysis.RaceModel(replay, line)
             series = model.gap_to_leader_series()
+            found = overtakes.find_overtakes(model)
         except acreplay.ReplayError as exc:
             self.path_var.set("No replay loaded")
             self._offer_report(path, exc)
@@ -255,6 +310,10 @@ class App(tk.Tk):
         finally:
             self.config(cursor="")
         self.replay, self.model, self.gap_series = replay, model, series
+        self.overtakes = found
+        names = sorted({replay.cars[i].driver for i in model.active})
+        self.driver_box.configure(values=[self.ALL_DRIVERS] + names)
+        self.driver_var.set(self.ALL_DRIVERS)
         self.path_var.set(path)
         layout = replay.layout or "-"
         text = ("Track: %s (layout %s)   Weather: %s   Cars: %d   Length: %s   Format v%d, read with: %s"
@@ -266,6 +325,7 @@ class App(tk.Tk):
             text += "\nNote: " + " ".join(replay.warnings)
         self.info_var.set(text)
         self.fill_drivers()
+        self.fill_overtakes()
         self.scale.configure(to=replay.frame_count - 1)
         self.set_frame(0)
         self.draw_chart()

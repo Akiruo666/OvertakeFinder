@@ -77,6 +77,7 @@ class Car:
     brake: bytes = None
     gear: bytes = None
     tire_dirt: list = None      # highest dirt value of the four tyres per frame
+    tire_dirt_min: list = None  # lowest of the four (> 0: all wheels off the tarmac)
     has_positions: bool = True  # False if every position in the file is (0, 0, 0)
 
     @property
@@ -169,6 +170,7 @@ def _decode_frames(buf, base, stride, count):
         speed.append(s if s == s and s < 1500 else 0.0)
     dirt_raw = _column(buf, base, stride, count, OFF_TIRE_DIRT, 4)
     dirt = [max(dirt_raw[i:i + 4]) for i in range(0, len(dirt_raw), 4)]
+    dirt_min = [min(dirt_raw[i:i + 4]) for i in range(0, len(dirt_raw), 4)]
     return dict(
         positions=pos,
         lap_time_ms=list(lap_time),
@@ -178,6 +180,7 @@ def _decode_frames(buf, base, stride, count):
         brake=bytes(_column(buf, base, stride, count, OFF_BRAKE, 1)),
         gear=bytes(_column(buf, base, stride, count, OFF_GEAR, 1)),
         tire_dirt=dirt,
+        tire_dirt_min=dirt_min,
     )
 
 

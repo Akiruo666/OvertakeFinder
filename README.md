@@ -22,6 +22,10 @@ Windows SmartScreen or antivirus may warn about an unsigned program that was jus
 - **Standings at selected moment**: slider, buttons or the left/right arrow keys move through the replay; shows replay time, lap, speed, and the gap to the car ahead and to the leader in metres.
 - **Gap chart**: gap to the leader for every car over the whole replay; click it to jump to that moment.
 
+## Overtakes
+
+The **Overtakes** list shows every pass: replay time, lap, overtaker, passed driver and notes. Pick a driver to see only his overtakes and the ones he suffered; click a row to jump to that moment in the standings. Notes mark: lapping (a lapped car is involved, needs track data), overtaker or passed car off track (all four wheels off the tarmac; one or two wheels over the white line is legal and not marked), and a car at the track limit (wall/boundary, only with track data).
+
 ## Units
 
 The **Units** switch at the top right toggles between **Metric** (m, km, km/h) and **Imperial** (ft, mi, mph). It changes the gap columns, both distance columns (short and long), the speed column, the "Driven" column in the drivers table and the chart axis. The choice is remembered in `.ac_overtake_finder.json` in your user folder.
