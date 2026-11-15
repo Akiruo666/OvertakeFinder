@@ -6,7 +6,15 @@ shifted by its grid slot. For cars that stay mostly on the racing line this is
 accurate to within a percent or two; sideways movement adds a little error.
 """
 import math
+import os
 from dataclasses import dataclass
+
+import gamefolder
+import trackdata
+
+# Smallest share of the recorded driving that must lie close to a racing line
+# for the line to be used (see trackdata.quick_fit).
+FIT_MIN = 0.6
 
 # A car cannot move this far in one recording step (30 ms -> 500 m/s); larger
 # jumps are teleports (pit reset, replay glitch) and are not counted as driving.
@@ -64,32 +72,88 @@ def grid_offsets(replay):
     return [along[c.index] - front if c.index in along else 0.0 for c in replay.cars]
 
 
+def choose_line(replay, game_folder):
+    """Find the AI racing line of the replay's track in the game folder.
+
+    Returns (line, note). `line` is None when there is no usable one (no game
+    folder set, track not installed, track without AI line, damaged file, or a
+    line that does not match the recorded driving); `note` says why, or which
+    file was used."""
+    fallback = " Gaps are estimated from the distance driven."
+    if not game_folder:
+        return None, "No game folder set." + fallback + " Use 'Game folder...' to set it."
+    if not replay.track or replay.track == "?":
+        return None, "The replay does not name its track." + fallback
+    paths, message = gamefolder.find_ai_lines(game_folder, replay.track, replay.layout)
+    if not paths:
+        return None, message + fallback
+    base = os.path.join(game_folder, "content", "tracks")
+    problems = []
+    for path in paths[:6]:
+        name = os.path.relpath(path, base)
+        try:
+            line = trackdata.load_ai_line(path)
+        except trackdata.TrackDataError as exc:
+            problems.append("%s: %s" % (name, exc))
+            continue
+        fit = trackdata.quick_fit(line, replay)
+        if fit is not None and fit < FIT_MIN:
+            problems.append("%s does not match the recorded driving (%.0f%% fits)" % (name, 100 * fit))
+            continue
+        return line, "Racing line: %s (%.0f m)." % (name, line.length)
+    return None, "No usable racing line for this track (%s)." % "; ".join(problems) + fallback
+
+
 class RaceModel:
     """Pre-computed progress for each car at every frame.
+
+    With a racing line (`line`), progress is the exact distance along the lap
+    (negative on the starting grid, growing over laps) and laps are counted
+    from the start line. Without one it is the distance driven, corrected for
+    the starting grid.
 
     Cars without any position data (every frame empty) are not part of the
     model: `progress` and the gap series hold None for them.
     """
 
-    def __init__(self, replay):
+    def __init__(self, replay, line=None):
         self.replay = replay
         self.frames = replay.frame_count
         self.race_laps = max((len(c.lap_times_ms) for c in replay.cars), default=0)
         self.active = [c.index for c in replay.cars if c.has_positions]
-        offsets = grid_offsets(replay)
+        self.line = line
+        self.method = "racing line" if line is not None else "distance driven"
+        # Do not show laps above what the game counted, when it counted for everybody.
+        all_counted = all(replay.cars[i].lap_index is not None for i in self.active)
+        self.lap_cap = self.race_laps if (self.race_laps and all_counted) else 0
+        self.lateral = [None] * len(replay.cars)
         self.progress = []
-        for car, off in zip(replay.cars, offsets):
-            if not car.has_positions:
-                self.progress.append(None)
-                continue
-            dist = driven_distance(car.positions[:self.frames])
-            self.progress.append([d + off for d in dist])
+        if line is not None:
+            step = 1 if len(self.active) * self.frames <= 300_000 else 3
+            for car in replay.cars:
+                if not car.has_positions:
+                    self.progress.append(None)
+                    continue
+                track = trackdata.track_car(line, car.positions[:self.frames], step)
+                self.progress.append(track.progress)
+                self.lateral[car.index] = track.lateral
+        else:
+            offsets = grid_offsets(replay)
+            for car, off in zip(replay.cars, offsets):
+                if not car.has_positions:
+                    self.progress.append(None)
+                    continue
+                dist = driven_distance(car.positions[:self.frames])
+                self.progress.append([d + off for d in dist])
 
     def time_s(self, frame):
         return self.replay.time_s(frame)
 
     def lap_at(self, car_index, frame):
         car = self.replay.cars[car_index]
+        if self.line is not None and self.line.closed and self.progress[car_index] is not None:
+            lap = max(1, int(self.progress[car_index][frame] // self.line.length) + 1)
+            return min(lap, self.lap_cap) if self.lap_cap else lap
         if car.lap_index is None:      # no lap information recorded for this car
             return None
         lap = car.lap_index[frame] + 1

@@ -12,30 +12,41 @@ from tkinter import filedialog, messagebox, ttk
 
 import acreplay
 import analysis
+import gamefolder
 
 COLORS = ["#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd",
           "#8c564b", "#e377c2", "#17becf", "#bcbd22", "#7f7f7f"]
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".ac_overtake_finder.json")
 
 
-def load_units():
-    """The unit system chosen last time (metric if nothing was saved)."""
+def load_config():
     try:
         with open(CONFIG_PATH, encoding="utf-8") as fh:
-            value = json.load(fh).get("units")
-        if value in analysis.UNIT_NAMES:
-            return value
-    except (OSError, ValueError, AttributeError):
-        pass
-    return analysis.METRIC
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_config(**changes):
+    """Merge `changes` into the saved settings (units, game folder, ...)."""
+    data = load_config()
+    data.update(changes)
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+    except OSError:
+        pass  # not being able to remember a choice is not worth an error
+
+
+def load_units():
+    """The unit system chosen last time (metric if nothing was saved)."""
+    value = load_config().get("units")
+    return value if value in analysis.UNIT_NAMES else analysis.METRIC
 
 
 def save_units(system):
-    try:
-        with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
-            json.dump({"units": system}, fh)
-    except OSError:
-        pass  # not being able to remember the choice is not worth an error
+    save_config(units=system)
 
 
 def nice_step(top):
@@ -63,6 +74,9 @@ class App(tk.Tk):
         self.gap_series = []
         self.frame = 0
         self.units = load_units()
+        cfg = load_config()
+        self.game_folder = gamefolder.normalize_game_folder(cfg.get("game_folder"))
+        self.line_note = ""
         self._build()
 
     # ------------------------------------------------------------------ UI
@@ -70,6 +84,7 @@ class App(tk.Tk):
         top = ttk.Frame(self, padding=8)
         top.pack(fill="x")
         ttk.Button(top, text="Open replay...", command=self.open_dialog).pack(side="left")
+        ttk.Button(top, text="Game folder...", command=self.choose_game_folder).pack(side="left", padx=(6, 0))
 
         # Unit system toggle, top right
         units_box = ttk.Frame(top)
@@ -138,8 +153,9 @@ class App(tk.Tk):
         paned.add(chart, weight=2)
 
         ttk.Label(self, padding=(8, 0, 8, 6), foreground="#666666",
-                  text="Gaps are measured along the distance each car has driven, corrected "
-                       "for the starting grid. Times are replay time from the start of the recording.").pack(fill="x")
+                  text="Distance is measured from the start line (negative on the grid) along the track's "
+                       "racing line, or from the distance driven when no track data is available. "
+                       "Times are replay time from the start of the recording.").pack(fill="x")
 
         self.bind("<Left>", lambda e: self.step(-10))
         self.bind("<Right>", lambda e: self.step(10))
@@ -169,6 +185,45 @@ class App(tk.Tk):
         value = analysis.short_length(metres, self.units)
         return ("%.1f" if self.units == analysis.METRIC else "%.0f") % value
 
+    # --------------------------------------------------------- game folder
+    def ensure_game_folder(self):
+        """First launch: find the game by itself, or ask where it is."""
+        if self.game_folder or load_config().get("game_folder_declined"):
+            return
+        found = gamefolder.detect_game_folder()
+        if found:
+            self.game_folder = found
+            save_config(game_folder=found)
+            return
+        if messagebox.askyesno(
+                "Assetto Corsa folder",
+                "Where is Assetto Corsa installed?\n\nWith the game folder the program can read "
+                "the track data (the AI racing line), which makes gaps and lap numbers exact.\n\n"
+                "Choose the folder now? (Usually ...\\steamapps\\common\\assettocorsa. "
+                "You can also do this later with 'Game folder...'.)"):
+            self.choose_game_folder()
+        else:
+            save_config(game_folder_declined=True)
+
+    def choose_game_folder(self):
+        while True:
+            path = filedialog.askdirectory(
+                title="Select the Assetto Corsa folder (the one that contains 'content')",
+                initialdir=self.game_folder or os.path.expanduser("~"))
+            if not path:
+                return
+            folder = gamefolder.normalize_game_folder(path)
+            if folder:
+                break
+            if not messagebox.askyesno(
+                    "Not an Assetto Corsa folder",
+                    "There is no 'content\\tracks' folder in:\n%s\n\nTry another folder?" % path):
+                return
+        self.game_folder = folder
+        save_config(game_folder=folder, game_folder_declined=False)
+        if self.replay is not None:        # use the new track data right away
+            self.load(self.replay.path)
+
     # ------------------------------------------------------------- loading
     def open_dialog(self):
         path = filedialog.askopenfilename(
@@ -186,7 +241,8 @@ class App(tk.Tk):
             replay = acreplay.load(path)
             if replay.frame_count < 2:
                 raise acreplay.ReplayError("The replay contains no frames.")
-            model = analysis.RaceModel(replay)
+            line, self.line_note = analysis.choose_line(replay, self.game_folder)
+            model = analysis.RaceModel(replay, line)
             series = model.gap_to_leader_series()
         except acreplay.ReplayError as exc:
             self.path_var.set("No replay loaded")
@@ -205,6 +261,7 @@ class App(tk.Tk):
                 % (replay.track, layout, replay.weather, len(replay.cars),
                    analysis.fmt_clock(replay.time_s(replay.frame_count - 1)),
                    replay.version, replay.strategy))
+        text += "\n" + self.line_note
         if replay.warnings:
             text += "\nNote: " + " ".join(replay.warnings)
         self.info_var.set(text)
@@ -350,6 +407,7 @@ class App(tk.Tk):
 
 def main():
     app = App()
+    app.after(50, app.ensure_game_folder)
     if len(sys.argv) > 1 and os.path.isfile(sys.argv[1]):
         app.after(100, lambda: app.load(sys.argv[1]))
     app.mainloop()

@@ -39,8 +39,15 @@ The line under the file name shows which method was used. If neither works, the 
 
 Some replays (seen in an online Practice session) list many drivers but only record movement for some of them; every frame of the other cars is empty. Those cars are shown at the bottom of the drivers table as "no position data", and are left out of the standings and the chart. A note under the file name says how many.
 
+## Game folder and track data
+
+At the first start the program looks for Assetto Corsa itself (Steam locations). If it cannot find it, it asks for the folder (the one that contains `content`). Change it later with **Game folder...** (top left).
+
+For each replay the program searches `content/tracks/<track>` (all subfolders, e.g. `ai/` or `<layout>/ai/`) for `fast_lane.ai`, the AI racing line, and checks that it matches the recorded driving. With it, distances, gaps and lap numbers are exact (distance from the start line, negative on the grid). The line under the file name says which file was used.
+
+Tracks without an AI line, a damaged line, a track that is not installed, or no game folder: the program falls back to the distance driven (estimated gaps) and says why.
+
 ## Notes
 
-- Gaps use the distance each car has driven, corrected for the starting grid. They become exact once the track centreline (`fast_lane.ai`) is used.
 - The replay format is reverse engineered; only format version 16 has been verified against real files.
 - `python selftest.py` tries to read every `.acreplay` in the folder without opening a window.
