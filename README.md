@@ -24,7 +24,7 @@ Windows SmartScreen or antivirus may warn about an unsigned program that was jus
 
 ## Overtakes
 
-The **Overtakes** list shows every pass: replay time, lap, overtaker, passed driver and notes. Pick a driver to see only his overtakes and the ones he suffered; click a row to jump to that moment in the standings. Notes mark: lapping (a lapped car is involved, needs track data), overtaker or passed car off track (all four wheels off the tarmac; one or two wheels over the white line is legal and not marked), and a car at the track limit (wall/boundary, only with track data).
+The **Overtakes** list shows every pass: replay time, lap, overtaker, passed driver and notes. Pick a driver to see only his overtakes and the ones he suffered; click a row to jump to that moment in the standings. Notes mark: lapping (a lapped car is involved, needs track data), overtaker or passed car off track (all four wheels off the tarmac; one or two wheels over the white line is legal and not marked), and contact (a car lost speed suddenly without braking for it, e.g. a wall or collision; thresholds are not tuned on a real crash yet). The AI line's edge distances are not used for off-track checks: they are narrower than the real tarmac.
 
 ## Units
 

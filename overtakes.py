@@ -11,8 +11,8 @@ the viewer:
   lapping            one of the two cars is a lap or more behind the other
   overtaker off      the overtaker had all four wheels off the tarmac
   overtaken off      the overtaken car had all four wheels off the tarmac
-  limit              a car was at the edge of the track (wall/boundary) -
-                     only with a racing line
+  contact            a car lost speed suddenly without braking for it (wall,
+                     barrier or collision)
 One or two wheels over the white line is legal and is not marked.
 """
 from dataclasses import dataclass, field
@@ -21,8 +21,14 @@ DEADBAND_M = 3.0        # a car must be this far in front before it counts as pa
 MAX_GAP_M = 60.0        # ignore "passes" between cars that were never this close
 WINDOW_S = 3.0          # off-track events within this time of the pass count
 OFF_FRAMES = 5          # all four wheels off for at least this many frames (150 ms)
-LIMIT_MARGIN_M = 0.3    # distance to the edge that counts as "at the limit"
-LIMIT_FRAMES = 10
+# Contact: speed lost within CONTACT_SPAN frames (~0.2 s). Heavy braking loses at
+# most about 19 km/h in that time (measured), so a bigger loss without brake
+# pressure is a hit. Very large losses count even when braking.
+CONTACT_SPAN = 7
+CONTACT_DROP_KMH = 12.0
+CONTACT_HARD_DROP_KMH = 30.0
+CONTACT_MIN_SPEED_KMH = 40.0
+CONTACT_BRAKE_MAX = 40
 
 
 @dataclass
@@ -35,12 +41,12 @@ class Overtake:
     lapping: bool = False
     overtaker_off: bool = False
     passed_off: bool = False
-    at_limit: bool = False
+    contact: bool = False
     flags: list = field(default_factory=list)
 
     @property
     def clean(self):
-        return not (self.lapping or self.overtaker_off or self.passed_off or self.at_limit)
+        return not (self.lapping or self.overtaker_off or self.passed_off or self.contact)
 
 
 def _run(values, lo, hi, minimum):
@@ -91,6 +97,7 @@ def find_overtakes(model, sample=3):
                 state = new
                 last_cross = None
     found.sort()
+    contacts = {i: contact_frames(replay.cars[i]) for i in active}
     out = []
     for f, over, under, q in found:
         f = min(f, n - 1)
@@ -100,31 +107,36 @@ def find_overtakes(model, sample=3):
             dirt = replay.cars[who].tire_dirt_min
             if dirt is not None and _run([v > 0 for v in dirt], lo, hi, OFF_FRAMES):
                 setattr(o, attr, True)
-        if model.line is not None and model.line.has_widths:
-            for who in (over, under):
-                if _at_limit(model, who, lo, hi):
-                    o.at_limit = True
+        for who in (over, under):
+            if any(lo <= c < hi for c in contacts[who]):
+                o.contact = True
         if o.lapping:
             o.flags.append("lapping")
         if o.overtaker_off:
             o.flags.append("overtaker off track")
         if o.passed_off:
             o.flags.append("passed car off track")
-        if o.at_limit:
-            o.flags.append("car at track limit")
+        if o.contact:
+            o.flags.append("contact (sudden speed loss)")
         out.append(o)
     return out
 
 
-def _at_limit(model, car, lo, hi):
-    line = model.line
-    lat = model.lateral[car]
-    prog = model.progress[car]
-    if lat is None:
-        return False
-    flags = []
-    for f in range(lo, hi):
-        i = int(((prog[f] % line.length) / line.length) * line.n) % line.n
-        edge = line.left[i] if lat[f] > 0 else line.right[i]
-        flags.append(edge > 0 and abs(lat[f]) >= edge - LIMIT_MARGIN_M)
-    return _run(flags, 0, len(flags), LIMIT_FRAMES)
+def contact_frames(car):
+    """Frames where the car lost speed suddenly (see CONTACT_* constants)."""
+    sp, brake = car.speed_kmh, car.brake
+    if sp is None:
+        return []
+    out = []
+    w = CONTACT_SPAN
+    f = 0
+    while f < len(sp) - w:
+        drop = sp[f] - sp[f + w]
+        braking = brake is not None and max(brake[f:f + w]) >= CONTACT_BRAKE_MAX
+        if sp[f] >= CONTACT_MIN_SPEED_KMH and (
+                drop >= CONTACT_HARD_DROP_KMH or (drop >= CONTACT_DROP_KMH and not braking)):
+            out.append(f + w // 2)
+            f += 30            # one event per second
+        else:
+            f += 1
+    return out
