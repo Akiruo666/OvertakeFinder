@@ -58,6 +58,22 @@ def nice_step(top):
     return 100000
 
 
+def scrolled_tree(parent, horizontal=False, **options):
+    """A Treeview with a vertical (and optionally horizontal) scroll bar."""
+    box = ttk.Frame(parent)
+    tree = ttk.Treeview(box, **options)
+    vbar = ttk.Scrollbar(box, orient="vertical", command=tree.yview)
+    tree.configure(yscrollcommand=vbar.set)
+    vbar.pack(side="right", fill="y")
+    if horizontal:
+        hbar = ttk.Scrollbar(box, orient="horizontal", command=tree.xview)
+        tree.configure(xscrollcommand=hbar.set)
+        hbar.pack(side="bottom", fill="x")
+    tree.pack(side="left", fill="both", expand=True)
+    box.pack(fill="both", expand=True)
+    return tree
+
+
 def default_replay_dir():
     docs = os.path.join(os.path.expanduser("~"), "Documents",
                         "Assetto Corsa", "replay")
@@ -80,6 +96,8 @@ class App(tk.Tk):
         self.line_note = ""
         self.road_note = ""
         self.overtakes = []
+        self.ticked = set()
+        self.shown_overtakes = []
         self._build()
 
     # ------------------------------------------------------------------ UI
@@ -111,14 +129,13 @@ class App(tk.Tk):
         # Drivers table
         drivers = ttk.Labelframe(paned, text="Drivers and lap times", padding=4)
         cols = ("pos", "driver", "nation", "team", "laps", "best", "times", "km")
-        self.drivers_tree = ttk.Treeview(drivers, columns=cols, show="headings", height=7)
+        self.drivers_tree = scrolled_tree(drivers, horizontal=True, columns=cols, show="headings", height=7)
         heads = (("pos", "Pos", 40), ("driver", "Driver", 190), ("nation", "Nat", 45),
                  ("team", "Team / livery", 190), ("laps", "Laps", 45),
                  ("best", "Best lap", 80), ("times", "Lap times", 210), ("km", "Driven km", 80))
         for key, text, width in heads:
             self.drivers_tree.heading(key, text=text)
             self.drivers_tree.column(key, width=width, anchor="w" if key in ("driver", "team", "times") else "center")
-        self.drivers_tree.pack(fill="both", expand=True)
         paned.add(drivers, weight=2)
 
         # Standings at a chosen moment
@@ -135,7 +152,7 @@ class App(tk.Tk):
         ttk.Label(stand, textvariable=self.frame_var).pack(anchor="w")
 
         scols = ("pos", "driver", "lap", "ahead", "leader", "speed", "dist", "distlong")
-        self.stand_tree = ttk.Treeview(stand, columns=scols, show="headings", height=7)
+        self.stand_tree = scrolled_tree(stand, columns=scols, show="headings", height=7)
         # Headings that carry a unit are set by _apply_unit_headings().
         for key, text, width in (("pos", "Pos", 40), ("driver", "Driver", 200),
                                  ("lap", "Lap", 45), ("ahead", "", 140),
@@ -143,7 +160,6 @@ class App(tk.Tk):
                                  ("dist", "", 100), ("distlong", "", 100)):
             self.stand_tree.heading(key, text=text)
             self.stand_tree.column(key, width=width, anchor="w" if key == "driver" else "center")
-        self.stand_tree.pack(fill="both", expand=True)
         paned.add(stand, weight=2)
 
         # Overtakes
@@ -153,20 +169,31 @@ class App(tk.Tk):
         ttk.Label(obar, text="Driver:").pack(side="left")
         self.driver_var = tk.StringVar(value=self.ALL_DRIVERS)
         self.driver_box = ttk.Combobox(obar, textvariable=self.driver_var, state="readonly",
-                                       values=[self.ALL_DRIVERS], width=32)
+                                       values=[self.ALL_DRIVERS], width=30)
         self.driver_box.pack(side="left", padx=6)
         self.driver_box.bind("<<ComboboxSelected>>", lambda e: self.fill_overtakes())
+        self.by_var = tk.BooleanVar(value=True)
+        self.passed_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(obar, text="Overtakes by this driver", variable=self.by_var,
+                        command=self.fill_overtakes).pack(side="left", padx=(6, 0))
+        ttk.Checkbutton(obar, text="Driver overtaken", variable=self.passed_var,
+                        command=self.fill_overtakes).pack(side="left", padx=(6, 0))
+        obar2 = ttk.Frame(ov)
+        obar2.pack(fill="x", pady=(4, 2))
+        ttk.Button(obar2, text="Tick all shown", command=lambda: self.tick_shown(True)).pack(side="left")
+        ttk.Button(obar2, text="Untick all shown", command=lambda: self.tick_shown(False)).pack(side="left", padx=6)
         self.ov_count = tk.StringVar(value="")
-        ttk.Label(obar, textvariable=self.ov_count).pack(side="left", padx=10)
-        ocols = ("time", "lap", "who", "passed", "notes")
-        self.ov_tree = ttk.Treeview(ov, columns=ocols, show="headings", height=6, selectmode="extended")
-        for key, text, width in (("time", "Replay time", 90), ("lap", "Lap", 45),
+        ttk.Label(obar2, textvariable=self.ov_count).pack(side="left", padx=10)
+        ocols = ("tick", "time", "lap", "who", "passed", "notes")
+        self.ov_tree = scrolled_tree(ov, columns=ocols, show="headings", height=6, selectmode="extended")
+        for key, text, width in (("tick", "Use", 45), ("time", "Replay time", 90), ("lap", "Lap", 45),
                                  ("who", "Overtaker", 200), ("passed", "Passed", 200),
                                  ("notes", "Notes", 300)):
             self.ov_tree.heading(key, text=text)
             self.ov_tree.column(key, width=width, anchor="w" if key in ("who", "passed", "notes") else "center")
-        self.ov_tree.pack(fill="both", expand=True)
         self.ov_tree.bind("<<TreeviewSelect>>", self._on_overtake_select)
+        self.ov_tree.bind("<Button-1>", self._on_overtake_click)
+        self.ov_tree.bind("<space>", self._on_overtake_space)
         paned.add(ov, weight=2)
 
         # Gap chart
@@ -253,31 +280,78 @@ class App(tk.Tk):
     # ----------------------------------------------------------- overtakes
     ALL_DRIVERS = "All drivers"
 
+    TICK_ON, TICK_OFF = "\u2611", "\u2610"
+
+    def _overtake_visible(self, o):
+        pick = self.driver_var.get()
+        if pick == self.ALL_DRIVERS:
+            return True
+        cars = self.replay.cars
+        return ((self.by_var.get() and cars[o.overtaker].driver == pick) or
+                (self.passed_var.get() and cars[o.passed].driver == pick))
+
     def fill_overtakes(self):
         tree = self.ov_tree
         tree.delete(*tree.get_children())
-        self.shown_overtakes = []
+        self.shown_overtakes = []        # indexes into self.overtakes
         if not self.model:
+            self._update_tick_count()
             return
         cars = self.replay.cars
-        pick = self.driver_var.get()
-        for o in self.overtakes:
-            who, passed = cars[o.overtaker].driver, cars[o.passed].driver
-            if pick != self.ALL_DRIVERS and pick not in (who, passed):
+        for i, o in enumerate(self.overtakes):
+            if not self._overtake_visible(o):
                 continue
-            self.shown_overtakes.append(o)
-            tree.insert("", "end", values=(
-                analysis.fmt_clock(o.time_s), "-" if o.lap is None else o.lap, who, passed,
+            self.shown_overtakes.append(i)
+            tree.insert("", "end", iid=str(i), values=(
+                self.TICK_ON if i in self.ticked else self.TICK_OFF,
+                analysis.fmt_clock(o.time_s), "-" if o.lap is None else o.lap,
+                cars[o.overtaker].driver, cars[o.passed].driver,
                 ", ".join(o.flags) if o.flags else ""))
-        self.ov_count.set("%d overtakes shown (of %d). Choose a driver to see only his overtakes "
-                          "and the ones he suffered." % (len(self.shown_overtakes), len(self.overtakes)))
+        self._update_tick_count()
+
+    def _update_tick_count(self):
+        self.ov_count.set("%d shown of %d overtakes   |   %d ticked in total" % (
+            len(self.shown_overtakes), len(self.overtakes), len(self.ticked)))
+
+    def _set_tick(self, index, on):
+        if on:
+            self.ticked.add(index)
+        else:
+            self.ticked.discard(index)
+        if str(index) in self.ov_tree.get_children():
+            self.ov_tree.set(str(index), "tick", self.TICK_ON if on else self.TICK_OFF)
+
+    def toggle_overtake(self, index):
+        self._set_tick(index, index not in self.ticked)
+        self._update_tick_count()
+
+    def tick_shown(self, on):
+        for i in self.shown_overtakes:
+            self._set_tick(i, on)
+        self._update_tick_count()
+
+    def _on_overtake_click(self, event):
+        tree = self.ov_tree
+        if tree.identify_region(event.x, event.y) == "cell" and tree.identify_column(event.x) == "#1":
+            row = tree.identify_row(event.y)
+            if row:
+                self.toggle_overtake(int(row))
+                return "break"
+        return None
+
+    def _on_overtake_space(self, _event=None):
+        rows = [int(r) for r in self.ov_tree.selection()]
+        if rows:
+            on = rows[0] not in self.ticked      # all selected rows follow the first one
+            for i in rows:
+                self._set_tick(i, on)
+            self._update_tick_count()
+        return "break"
 
     def _on_overtake_select(self, _event=None):
         sel = self.ov_tree.selection()
         if sel and self.model:
-            idx = self.ov_tree.index(sel[0])
-            if idx < len(self.shown_overtakes):
-                self.set_frame(self.shown_overtakes[idx].frame)
+            self.set_frame(self.overtakes[int(sel[0])].frame)
 
     # ------------------------------------------------------------- loading
     def open_dialog(self):
@@ -313,9 +387,12 @@ class App(tk.Tk):
             self.config(cursor="")
         self.replay, self.model, self.gap_series = replay, model, series
         self.overtakes = found
+        self.ticked = set()
         names = sorted({replay.cars[i].driver for i in model.active})
         self.driver_box.configure(values=[self.ALL_DRIVERS] + names)
         self.driver_var.set(self.ALL_DRIVERS)
+        self.by_var.set(True)
+        self.passed_var.set(True)
         self.path_var.set(path)
         layout = replay.layout or "-"
         text = ("Track: %s (layout %s)   Weather: %s   Cars: %d   Length: %s   Format v%d, read with: %s"
