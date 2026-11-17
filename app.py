@@ -17,6 +17,7 @@ import clips
 import gamefolder
 import mapview
 import overtakes
+import replaywriter
 
 COLORS = ["#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd",
           "#8c564b", "#e377c2", "#17becf", "#bcbd22", "#7f7f7f"]
@@ -101,6 +102,10 @@ class App(tk.Tk):
         self.ticked = set()
         self.shown_overtakes = []
         self.selected_overtake = None
+        self.default_before = clips.clamp_seconds(cfg.get("clip_before_s"), clips.CLIP_BEFORE_S)
+        self.default_after = clips.clamp_seconds(cfg.get("clip_after_s"), clips.CLIP_AFTER_S)
+        self.clip_override = {}          # overtake index -> (before, after) set by hand
+        self._syncing = False
         self._build()
 
     # ------------------------------------------------------------------ UI
@@ -187,11 +192,42 @@ class App(tk.Tk):
         ttk.Button(obar2, text="Untick all shown", command=lambda: self.tick_shown(False)).pack(side="left", padx=6)
         self.ov_count = tk.StringVar(value="")
         ttk.Label(obar2, textvariable=self.ov_count).pack(side="left", padx=10)
-        ocols = ("tick", "time", "lap", "who", "passed", "notes")
+        # Clip settings: defaults, extra data, save
+        obar3 = ttk.Frame(ov)
+        obar3.pack(fill="x", pady=(0, 2))
+        ttk.Label(obar3, text="Clip around each overtake - default:  before").pack(side="left")
+        self.before_var = tk.StringVar(value=str(self.default_before))
+        self.after_var = tk.StringVar(value=str(self.default_after))
+        spin_before = ttk.Spinbox(obar3, from_=0, to=clips.MAX_CLIP_S, width=4, textvariable=self.before_var,
+                                  command=self._on_default_changed)
+        spin_before.pack(side="left", padx=4)
+        ttk.Label(obar3, text="s   after").pack(side="left")
+        spin_after = ttk.Spinbox(obar3, from_=0, to=clips.MAX_CLIP_S, width=4, textvariable=self.after_var,
+                                 command=self._on_default_changed)
+        spin_after.pack(side="left", padx=4)
+        for spin in (spin_before, spin_after):          # typed values count too
+            spin.bind("<Return>", lambda e: self._on_default_changed())
+            spin.bind("<FocusOut>", lambda e: self._on_default_changed())
+        ttk.Label(obar3, text="s").pack(side="left")
+        ttk.Label(obar3, text="     Extra data:").pack(side="left")
+        self.trailer_var = tk.StringVar(value=self._trailer_label(load_config().get("trailer")))
+        ttk.Combobox(obar3, textvariable=self.trailer_var, state="readonly", width=22,
+                     values=[label for _k, label in replaywriter.TRAILERS]).pack(side="left", padx=4)
+        ttk.Button(obar3, text="Save new replay...", command=self.save_replay).pack(side="right")
+
+        obar4 = ttk.Frame(ov)
+        obar4.pack(fill="x", pady=(0, 4))
+        ttk.Label(obar4, text="Selected overtake(s):").pack(side="left")
+        self.sel_before = self._slider_box(obar4, "Before", "before")
+        self.sel_after = self._slider_box(obar4, "After", "after")
+        ttk.Button(obar4, text="Reset to default", command=self.reset_selected_clips).pack(side="left", padx=10)
+
+        ocols = ("tick", "time", "lap", "who", "passed", "before", "after", "notes")
         self.ov_tree = scrolled_tree(ov, columns=ocols, show="headings", height=6, selectmode="extended")
         for key, text, width in (("tick", "Use", 45), ("time", "Replay time", 90), ("lap", "Lap", 45),
-                                 ("who", "Overtaker", 200), ("passed", "Passed", 200),
-                                 ("notes", "Notes", 300)):
+                                 ("who", "Overtaker", 190), ("passed", "Passed", 190),
+                                 ("before", "Before (s)", 70), ("after", "After (s)", 70),
+                                 ("notes", "Notes", 260)):
             self.ov_tree.heading(key, text=text)
             self.ov_tree.column(key, width=width, anchor="w" if key in ("who", "passed", "notes") else "center")
         self.ov_tree.bind("<<TreeviewSelect>>", self._on_overtake_select)
@@ -287,6 +323,153 @@ class App(tk.Tk):
     # ----------------------------------------------------------- overtakes
     ALL_DRIVERS = "All drivers"
 
+    # -------------------------------------------------------------- clips
+    def _trailer_label(self, key):
+        for k, label in replaywriter.TRAILERS:
+            if k == key:
+                return label
+        return replaywriter.TRAILERS[0][1]
+
+    def _trailer_key(self):
+        for k, label in replaywriter.TRAILERS:
+            if label == self.trailer_var.get():
+                return k
+        return replaywriter.TRAILER_NONE
+
+    def _slider_box(self, parent, title, which):
+        """[-] slider [+] and the value, for the clip length before/after."""
+        box = ttk.Frame(parent)
+        box.pack(side="left", padx=(10, 0))
+        ttk.Label(box, text=title).pack(side="left")
+        ttk.Button(box, text="-", width=2, command=lambda: self._nudge(which, -1)).pack(side="left", padx=(4, 0))
+        scale = ttk.Scale(box, from_=0, to=clips.MAX_CLIP_S, orient="horizontal", length=170,
+                          command=lambda v, w=which: self._on_slider(w, v))
+        scale.pack(side="left")
+        ttk.Button(box, text="+", width=2, command=lambda: self._nudge(which, 1)).pack(side="left")
+        label = tk.StringVar(value="- s")
+        ttk.Label(box, textvariable=label, width=6).pack(side="left", padx=(4, 0))
+        return {"scale": scale, "label": label}
+
+    def clip_span(self, index):
+        """(seconds before, seconds after) used for one overtake."""
+        return self.clip_override.get(index, (self.default_before, self.default_after))
+
+    def clip_ranges(self):
+        return clips.clip_ranges(self.model, self.overtakes, self.ticked, self.clip_span) if self.model else []
+
+    def _on_default_changed(self):
+        self.default_before = clips.clamp_seconds(self.before_var.get(), self.default_before)
+        self.default_after = clips.clamp_seconds(self.after_var.get(), self.default_after)
+        self.before_var.set(str(self.default_before))
+        self.after_var.set(str(self.default_after))
+        save_config(clip_before_s=self.default_before, clip_after_s=self.default_after)
+        # hand-set clips that now equal the default are not "hand-set" any more
+        self.clip_override = {i: v for i, v in self.clip_override.items()
+                              if v != (self.default_before, self.default_after)}
+        self._clips_changed()
+
+    def _selected_indexes(self):
+        return [int(r) for r in self.ov_tree.selection()]
+
+    def _set_clip(self, index, before=None, after=None):
+        b, a = self.clip_span(index)
+        b = b if before is None else before
+        a = a if after is None else after
+        if (b, a) == (self.default_before, self.default_after):
+            self.clip_override.pop(index, None)
+        else:
+            self.clip_override[index] = (b, a)
+
+    def _on_slider(self, which, value):
+        if self._syncing or not self.model:
+            return
+        v = clips.clamp_seconds(value)
+        rows = self._selected_indexes()
+        if not rows:
+            return
+        for i in rows:
+            self._set_clip(i, **{which: v})
+        self._clips_changed()
+
+    def _nudge(self, which, delta):
+        rows = self._selected_indexes()
+        if not rows or not self.model:
+            return
+        current = self.clip_span(rows[0])[0 if which == "before" else 1]
+        v = clips.clamp_seconds(current + delta)
+        for i in rows:
+            self._set_clip(i, **{which: v})
+        self._clips_changed()
+
+    def reset_selected_clips(self):
+        for i in self._selected_indexes():
+            self.clip_override.pop(i, None)
+        self._clips_changed()
+
+    def _clips_changed(self):
+        """Refresh the columns, the sliders, the chart strip and the totals."""
+        self._refresh_clip_columns()
+        self._sync_sliders()
+        self._update_tick_count()
+
+    def _refresh_clip_columns(self):
+        for i in self.shown_overtakes:
+            b, a = self.clip_span(i)
+            mark = "*" if i in self.clip_override else ""
+            self.ov_tree.set(str(i), "before", "%d%s" % (b, mark))
+            self.ov_tree.set(str(i), "after", "%d%s" % (a, mark))
+
+    def _sync_sliders(self):
+        """Show the values of the first selected overtake on the sliders."""
+        rows = self._selected_indexes()
+        self._syncing = True
+        try:
+            for box, k in ((self.sel_before, 0), (self.sel_after, 1)):
+                if rows:
+                    value = self.clip_span(rows[0])[k]
+                    box["scale"].set(value)
+                    box["label"].set("%d s" % value + ("" if len(rows) == 1 else " (+%d)" % (len(rows) - 1)))
+                else:
+                    box["label"].set("- s")
+        finally:
+            self._syncing = False
+
+    def save_replay(self):
+        if not self.model:
+            messagebox.showinfo("Save new replay", "Open a replay first.")
+            return
+        spans = self.clip_ranges()
+        if not spans:
+            messagebox.showinfo("Save new replay", "Tick at least one overtake first (column 'Use').")
+            return
+        if self.replay.strategy != "exact layout":
+            messagebox.showerror("Save new replay", "This replay was only read in limited mode, "
+                                 "so it cannot be cut into a new replay.")
+            return
+        key = self._trailer_key()
+        save_config(trailer=key)
+        stem = os.path.splitext(os.path.basename(self.replay.path))[0]
+        target = filedialog.asksaveasfilename(
+            title="Save new replay", defaultextension=".acreplay",
+            initialdir=os.path.dirname(self.replay.path), initialfile=stem + "_overtakes.acreplay",
+            filetypes=[("AC replay", "*.acreplay")])
+        if not target:
+            return
+        self.config(cursor="watch")
+        self.update_idletasks()
+        try:
+            frames, size = replaywriter.write_file(self.replay.path, target, spans, key)
+        except (replaywriter.WriteError, acreplay.ReplayError, OSError) as exc:
+            messagebox.showerror("Save new replay", str(exc))
+            return
+        finally:
+            self.config(cursor="")
+        seconds = frames * self.replay.interval_ms / 1000.0
+        messagebox.showinfo(
+            "Replay saved", "%d clip(s), %s long, %.1f MB:\n%s\n\nCopy it to your Assetto Corsa replay "
+            "folder (Documents\\Assetto Corsa\\replay) to play it in the game." % (
+                len(spans), analysis.fmt_clock(seconds), size / 1e6, target))
+
     TICK_ON, TICK_OFF = "\u2611", "\u2610"
 
     def _overtake_visible(self, o):
@@ -313,6 +496,7 @@ class App(tk.Tk):
                 self.TICK_ON if i in self.ticked else self.TICK_OFF,
                 analysis.fmt_clock(o.time_s), "-" if o.lap is None else o.lap,
                 cars[o.overtaker].driver, cars[o.passed].driver,
+                self._clip_text(i, 0), self._clip_text(i, 1),
                 ", ".join(o.flags) if o.flags else ""))
         self._update_tick_count()
 
@@ -336,16 +520,20 @@ class App(tk.Tk):
         self.selected_overtake = index
         self.ov_tree.selection_set(str(index))
         self.ov_tree.see(str(index))
+        self._sync_sliders()
         self.set_frame(self.overtakes[index].frame)
         self.chart.draw()
 
+    def _clip_text(self, index, k):
+        return "%d%s" % (self.clip_span(index)[k], "*" if index in self.clip_override else "")
+
     def _update_tick_count(self):
-        spans = clips.clip_ranges(self.model, self.overtakes, self.ticked) if self.model else []
+        spans = self.clip_ranges()
         seconds = sum(b - a for a, b in spans) * (self.replay.interval_ms / 1000.0) if spans else 0
         self.ov_count.set("%d shown of %d overtakes   |   %d ticked, %d clip(s), %s in total "
-                          "(%d s before, %d s after each)" % (
+                          "(* = clip length set by hand)" % (
                               len(self.shown_overtakes), len(self.overtakes), len(self.ticked), len(spans),
-                              analysis.fmt_clock(seconds), clips.CLIP_BEFORE_S, clips.CLIP_AFTER_S))
+                              analysis.fmt_clock(seconds)))
         if self.model:
             self.chart.draw()
             self._update_map()
@@ -389,6 +577,7 @@ class App(tk.Tk):
         sel = self.ov_tree.selection()
         if sel and self.model:
             index = int(sel[0])
+            self._sync_sliders()
             if index != self.selected_overtake:
                 self.selected_overtake = index
                 self.set_frame(self.overtakes[index].frame)
@@ -427,6 +616,7 @@ class App(tk.Tk):
             self.config(cursor="")
         self.replay, self.model = replay, model
         self.selected_overtake = None
+        self.clip_override = {}
         self.overtakes = found
         self.ticked = set()
         names = sorted({replay.cars[i].driver for i in model.active})

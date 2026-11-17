@@ -294,7 +294,7 @@ class ChartView:
         app, m = self.app, self.model
         c = self.canvas
         c.create_text(x0 - 6, y1 + 29, anchor="e", text="clips", fill="#2e7d32", font=("TkDefaultFont", 8))
-        for a, b in clips.clip_ranges(m, app.overtakes, app.ticked):
+        for a, b in app.clip_ranges():
             if b < self.v0 or a > self.v1:
                 continue
             c.create_rectangle(max(x0, self._x(a)), y1 + 24, min(x1, self._x(b)), y1 + 34,

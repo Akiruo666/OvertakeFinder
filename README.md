@@ -56,3 +56,13 @@ Tracks without an AI line, a damaged line, a track that is not installed, or no 
 
 - The replay format is reverse engineered; only format version 16 has been verified against real files.
 - `python selftest.py` tries to read every `.acreplay` in the folder without opening a window.
+
+## Saving a new replay
+
+Tick the overtakes you want (column **Use**). Each tick becomes a clip: by default **5 seconds before and 5 seconds after** the overtake. The default is set with the two number boxes *Clip around each overtake - default: before / after* (0-60 s, remembered in `.ac_overtake_finder.json`).
+
+Per overtake you can change this: select one or more rows in the list and use the **Before** and **After** sliders (or the `-` / `+` buttons, one second per step). The columns *Before (s)* and *After (s)* show the values; a `*` means it was set by hand. *Reset to default* puts the selected rows back to the default. Changing the default changes every row that was not set by hand. Overlapping clips are joined. The chart shows the clips as a green strip and the list shows the total length.
+
+**Save new replay...** writes a new `.acreplay` with only the clips, one after the other. The original is never changed or overwritten. Copy the result to `Documents\Assetto Corsa\replay` to play it in the game. The cars jump from the end of one clip to the start of the next.
+
+*Extra data*: replays recorded with the Custom Shaders Patch end with race settings and shader data that belong to the original frames. **None** (default) leaves all of that out, as the known replay merger tools do. **Race settings only** keeps the settings but not the per-frame shader data. **Everything, unchanged** keeps all of it, although the per-frame parts no longer match the cut replay. If the game does not accept a new replay, try another option.
