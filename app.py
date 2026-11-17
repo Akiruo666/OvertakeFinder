@@ -12,7 +12,10 @@ from tkinter import filedialog, messagebox, ttk
 
 import acreplay
 import analysis
+import chartview
+import clips
 import gamefolder
+import mapview
 import overtakes
 
 COLORS = ["#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd",
@@ -84,11 +87,10 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("AC Overtake Finder - Race overview")
-        self.geometry("1000x940")
+        self.geometry("1280x980")
         self.minsize(820, 640)
         self.replay = None
         self.model = None
-        self.gap_series = []
         self.frame = 0
         self.units = load_units()
         cfg = load_config()
@@ -98,6 +100,7 @@ class App(tk.Tk):
         self.overtakes = []
         self.ticked = set()
         self.shown_overtakes = []
+        self.selected_overtake = None
         self._build()
 
     # ------------------------------------------------------------------ UI
@@ -196,14 +199,18 @@ class App(tk.Tk):
         self.ov_tree.bind("<space>", self._on_overtake_space)
         paned.add(ov, weight=2)
 
-        # Gap chart
-        chart = ttk.Labelframe(paned, text="Gap to leader over the race (click to jump)", padding=4)
-        self.canvas = tk.Canvas(chart, background="white", height=220, highlightthickness=0)
-        self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<Configure>", lambda e: self.draw_chart())
-        self.canvas.bind("<Button-1>", self._on_chart_click)
-        self.canvas.bind("<B1-Motion>", self._on_chart_click)
-        paned.add(chart, weight=2)
+        # Chart and track map side by side
+        bottom = ttk.Panedwindow(paned, orient="horizontal")
+        chart_box = ttk.Labelframe(bottom, text="Race chart (wheel = zoom, click = jump, click a marker = select overtake)",
+                                   padding=4)
+        self.chart = chartview.ChartView(chart_box, self, COLORS)
+        bottom.add(chart_box, weight=3)
+        map_box = ttk.Labelframe(bottom, text="Track map (wheel = zoom, drag = move, double-click = reset)", padding=4)
+        self.map_canvas = tk.Canvas(map_box, background=mapview.GRASS, height=240, width=320, highlightthickness=0)
+        self.map_canvas.pack(fill="both", expand=True)
+        self.map = mapview.MapView(self.map_canvas, COLORS)
+        bottom.add(map_box, weight=2)
+        paned.add(bottom, weight=3)
 
         ttk.Label(self, padding=(8, 0, 8, 6), foreground="#666666",
                   text="Distance is measured from the start line (negative on the grid) along the track's "
@@ -232,7 +239,7 @@ class App(tk.Tk):
         if self.model:
             self.fill_drivers()
             self.set_frame(self.frame)
-            self.draw_chart()
+            self.chart.draw()
 
     def _gap_text(self, metres):
         value = analysis.short_length(metres, self.units)
@@ -309,9 +316,39 @@ class App(tk.Tk):
                 ", ".join(o.flags) if o.flags else ""))
         self._update_tick_count()
 
+    def selected_car(self):
+        """Car index of the driver chosen in the filter (None for all drivers)."""
+        pick = self.driver_var.get()
+        if not self.model or pick == self.ALL_DRIVERS:
+            return None
+        for i in self.model.active:
+            if self.replay.cars[i].driver == pick:
+                return i
+        return None
+
+    def select_overtake(self, index):
+        """Select an overtake (also from the chart): jump to it and highlight it."""
+        if not self.model or not (0 <= index < len(self.overtakes)):
+            return
+        if index not in self.shown_overtakes:       # hidden by the filter: show everybody
+            self.driver_var.set(self.ALL_DRIVERS)
+            self.fill_overtakes()
+        self.selected_overtake = index
+        self.ov_tree.selection_set(str(index))
+        self.ov_tree.see(str(index))
+        self.set_frame(self.overtakes[index].frame)
+        self.chart.draw()
+
     def _update_tick_count(self):
-        self.ov_count.set("%d shown of %d overtakes   |   %d ticked in total" % (
-            len(self.shown_overtakes), len(self.overtakes), len(self.ticked)))
+        spans = clips.clip_ranges(self.model, self.overtakes, self.ticked) if self.model else []
+        seconds = sum(b - a for a, b in spans) * (self.replay.interval_ms / 1000.0) if spans else 0
+        self.ov_count.set("%d shown of %d overtakes   |   %d ticked, %d clip(s), %s in total "
+                          "(%d s before, %d s after each)" % (
+                              len(self.shown_overtakes), len(self.overtakes), len(self.ticked), len(spans),
+                              analysis.fmt_clock(seconds), clips.CLIP_BEFORE_S, clips.CLIP_AFTER_S))
+        if self.model:
+            self.chart.draw()
+            self._update_map()
 
     def _set_tick(self, index, on):
         if on:
@@ -351,7 +388,11 @@ class App(tk.Tk):
     def _on_overtake_select(self, _event=None):
         sel = self.ov_tree.selection()
         if sel and self.model:
-            self.set_frame(self.overtakes[int(sel[0])].frame)
+            index = int(sel[0])
+            if index != self.selected_overtake:
+                self.selected_overtake = index
+                self.set_frame(self.overtakes[index].frame)
+                self.chart.draw()
 
     # ------------------------------------------------------------- loading
     def open_dialog(self):
@@ -373,7 +414,6 @@ class App(tk.Tk):
             line, self.line_note = analysis.choose_line(replay, self.game_folder)
             roadmap, self.road_note = analysis.choose_roadmap(replay, self.game_folder)
             model = analysis.RaceModel(replay, line, roadmap)
-            series = model.gap_to_leader_series()
             found = overtakes.find_overtakes(model)
         except acreplay.ReplayError as exc:
             self.path_var.set("No replay loaded")
@@ -385,7 +425,8 @@ class App(tk.Tk):
             return
         finally:
             self.config(cursor="")
-        self.replay, self.model, self.gap_series = replay, model, series
+        self.replay, self.model = replay, model
+        self.selected_overtake = None
         self.overtakes = found
         self.ticked = set()
         names = sorted({replay.cars[i].driver for i in model.active})
@@ -408,8 +449,9 @@ class App(tk.Tk):
         self.fill_drivers()
         self.fill_overtakes()
         self.scale.configure(to=replay.frame_count - 1)
+        self.chart.set_model()
+        self.map.set_model(model, roadmap)
         self.set_frame(0)
-        self.draw_chart()
 
     def _offer_report(self, path, exc):
         """Explain the failure and offer a small text report that can be shared."""
@@ -475,75 +517,16 @@ class App(tk.Tk):
                 "-" if s.speed_kmh is None else "%.0f" % analysis.speed_value(s.speed_kmh, self.units),
                 "%.0f" % analysis.short_length(s.progress_m, self.units),
                 "%.2f" % analysis.long_length(s.progress_m, self.units)))
-        self.draw_cursor()
+        self.chart.follow()
+        self.chart.draw_cursor()
+        self._update_map()
 
-    # --------------------------------------------------------------- chart
-    MARGIN = (52, 14, 14, 26)  # left, top, right, bottom
-
-    def _plot_area(self):
-        w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
-        l, t, r, b = self.MARGIN
-        return l, t + 18, w - r, h - b  # extra 18 px on top for the legend
-
-    def draw_chart(self):
-        c = self.canvas
-        c.delete("all")
-        if not self.model:
-            c.create_text(20, 20, anchor="nw", text="Open a replay to see the race overview.")
-            return
-        x0, y0, x1, y1 = self._plot_area()
-        if x1 - x0 < 50 or y1 - y0 < 30:
-            return
-        n = self.model.frames
-        unit = analysis.UNIT_NAMES[self.units][0]
-        scale = analysis.short_length(1.0, self.units)       # display units per metre
-        top = (max(max(s) for s in self.gap_series if s is not None) * scale) or 1.0
-        step = nice_step(top)
-        ymax = (int(top / step) + 1) * step
-        for v in range(0, ymax + 1, step):
-            y = y0 + (y1 - y0) * v / ymax
-            c.create_line(x0, y, x1, y, fill="#e6e6e6")
-            c.create_text(x0 - 6, y, anchor="e", text="%d %s" % (v, unit), fill="#555555",
-                          font=("TkDefaultFont", 8))
-        stride = max(1, n // max(1, (x1 - x0)))
-        for i, series in enumerate(self.gap_series):
-            if series is None:
-                continue
-            pts = []
-            for f in range(0, n, stride):
-                pts.extend((x0 + (x1 - x0) * f / (n - 1),
-                            y0 + (y1 - y0) * series[f] * scale / ymax))
-            c.create_line(*pts, fill=COLORS[i % len(COLORS)], width=2)
-        c.create_text(x0, y1 + 12, anchor="w", text=analysis.fmt_clock(0), fill="#555555", font=("TkDefaultFont", 8))
-        c.create_text(x1, y1 + 12, anchor="e", text=analysis.fmt_clock(self.model.time_s(n - 1)),
-                      fill="#555555", font=("TkDefaultFont", 8))
-        lx = x0
-        for i, car in enumerate(self.replay.cars):
-            if self.gap_series[i] is None:
-                continue
-            c.create_rectangle(lx, 6, lx + 10, 16, fill=COLORS[i % len(COLORS)], outline="")
-            label = car.driver if len(car.driver) < 18 else car.driver[:16] + ".."
-            tid = c.create_text(lx + 14, 11, anchor="w", text=label, font=("TkDefaultFont", 8))
-            lx = c.bbox(tid)[2] + 12
-        self.draw_cursor()
-
-    def draw_cursor(self):
-        c = self.canvas
-        c.delete("cursor")
-        if not self.model:
-            return
-        x0, y0, x1, y1 = self._plot_area()
-        if x1 - x0 < 50:
-            return
-        x = x0 + (x1 - x0) * self.frame / (self.model.frames - 1)
-        c.create_line(x, y0, x, y1, fill="#333333", dash=(4, 3), tags="cursor")
-
-    def _on_chart_click(self, event):
-        if not self.model:
-            return
-        x0, _, x1, _ = self._plot_area()
-        frac = min(1.0, max(0.0, (event.x - x0) / max(1, (x1 - x0))))
-        self.set_frame(round(frac * (self.model.frames - 1)))
+    def _update_map(self):
+        self.map.frame = self.frame
+        self.map.selected = self.selected_car()
+        o = self.overtakes[self.selected_overtake] if self.selected_overtake is not None else None
+        self.map.highlight = (o.overtaker, o.passed) if o else ()
+        self.map.draw_cars()
 
 
 def main():

@@ -103,3 +103,44 @@ def off_track_frames(roadmap, car, step=2):
         if roadmap.wheels_on_road(pos[f], h) == 0:
             out.add(f)
     return out
+
+
+def track_edges(roadmap, line, max_half=25.0, step=0.5):
+    """Width of the real tarmac on both sides of the AI line.
+
+    Returns (left, right): per line point the distance to the last road/kerb
+    surface on each side (0 when the line point itself is off the surface). The
+    search stops after three misses in a row, so a gap, or a pit lane next to
+    the track, does not stretch the result."""
+    n = line.n
+    left, right = [], []
+    for i in range(n):
+        a = (i - 1) % n if line.closed else max(i - 1, 0)
+        b = (i + 1) % n if line.closed else min(i + 1, n - 1)
+        dx, dz = line.xs[b] - line.xs[a], line.zs[b] - line.zs[a]
+        d = math.hypot(dx, dz) or 1.0
+        nx, nz = -dz / d, dx / d
+        sides = []
+        for sign in (1.0, -1.0):
+            reach = misses = 0
+            k = 0
+            while k * step <= max_half:
+                dist = k * step
+                if roadmap.on_road(line.xs[i] + sign * nx * dist, line.zs[i] + sign * nz * dist):
+                    reach, misses = dist, 0
+                else:
+                    misses += 1
+                    if misses >= 3:
+                        break
+                k += 1
+            sides.append(reach)
+        left.append(sides[0])
+        right.append(sides[1])
+
+    def smooth(v):
+        out = []
+        for i in range(len(v)):
+            window = sorted(v[(i + k) % len(v)] for k in range(-2, 3))
+            out.append(window[2])
+        return out
+    return smooth(left), smooth(right)

@@ -209,6 +209,27 @@ class RaceModel:
             prev = p
         return rows
 
+    def rank_series(self):
+        """(frames, ranks): race position (1 = leader) of every active car at a
+        sampled list of frames; ranks[i] is None for cars without data."""
+        if getattr(self, "_ranks", None) is None:
+            stride = max(1, self.frames // 6000)
+            frames = list(range(0, self.frames, stride))
+            if frames[-1] != self.frames - 1:
+                frames.append(self.frames - 1)
+            ranks = [[] if p is not None else None for p in self.progress]
+            for f in frames:
+                order = sorted(self.active, key=lambda i: -self.progress[i][f])
+                for r, i in enumerate(order, start=1):
+                    ranks[i].append(r)
+            self._ranks = (frames, ranks)
+        return self._ranks
+
+    def order_at(self, frame):
+        """Car indexes from first to last place at `frame`."""
+        frame = max(0, min(frame, self.frames - 1))
+        return sorted(self.active, key=lambda i: -self.progress[i][frame])
+
     def gap_to_leader_series(self):
         """Per car a list with its gap to the leader (metres) per frame.
 

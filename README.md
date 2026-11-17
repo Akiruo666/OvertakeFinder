@@ -20,7 +20,8 @@ Windows SmartScreen or antivirus may warn about an unsigned program that was jus
 
 - **Drivers and lap times**: classification (laps completed, then total time), best lap, every lap time, distance driven.
 - **Standings at selected moment**: slider, buttons or the left/right arrow keys move through the replay; shows replay time, lap, speed, and the gap to the car ahead and to the leader in metres.
-- **Gap chart**: gap to the leader for every car over the whole replay; click it to jump to that moment.
+- **Race chart** (bottom left): choose **Positions** (race position of every car over time; crossing lines are overtakes, drawn as markers: circle = clean, diamond = has a note; filled green/orange = ticked, red ring = selected), **Gap to leader**, or **Gap to selected driver** (the driver chosen in the overtakes list; + means that car is ahead). Mouse wheel zooms around the pointer, the scroll bar moves through the zoomed replay, *Zoom 120 s around cursor* and *Reset zoom* are above the chart. Click to jump to a moment, click a marker to select that overtake, point at a line to see who it is. The green strip at the bottom shows the **clips** of the ticked overtakes (5 s before and 5 s after each, overlapping ones merged); the total length is shown above the list.
+- **Track map** (bottom right): the track seen from above with every car at the shown moment, so jumping in time (slider, chart, list) always shows the right situation. The selected overtake's two cars are highlighted with a short trail, the chosen driver as well. Wheel zooms, drag moves, double-click resets. The track shape comes from the track model (real tarmac), else the AI racing line, else the paths the cars drove.
 
 ## Overtakes
 
