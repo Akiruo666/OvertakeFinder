@@ -14,6 +14,7 @@ import acreplay
 import analysis
 import chartview
 import clips
+import focusplan
 import gamefolder
 import mapview
 import overtakes
@@ -213,6 +214,10 @@ class App(tk.Tk):
         self.trailer_var = tk.StringVar(value=self._trailer_label(load_config().get("trailer")))
         ttk.Combobox(obar3, textvariable=self.trailer_var, state="readonly", width=22,
                      values=[label for _k, label in replaywriter.TRAILERS]).pack(side="left", padx=4)
+        ttk.Label(obar3, text="   Camera follows:").pack(side="left")
+        self.focus_var = tk.StringVar(value=self._focus_label(load_config().get("focus")))
+        ttk.Combobox(obar3, textvariable=self.focus_var, state="readonly", width=24,
+                     values=[label for _k, label in focusplan.FOCUS_CHOICES]).pack(side="left", padx=4)
         ttk.Button(obar3, text="Save new replay...", command=self.save_replay).pack(side="right")
 
         obar4 = ttk.Frame(ov)
@@ -330,6 +335,18 @@ class App(tk.Tk):
                 return label
         return replaywriter.TRAILERS[0][1]
 
+    def _focus_label(self, key):
+        for k, label in focusplan.FOCUS_CHOICES:
+            if k == key:
+                return label
+        return focusplan.FOCUS_CHOICES[0][1]
+
+    def _focus_key(self):
+        for k, label in focusplan.FOCUS_CHOICES:
+            if label == self.focus_var.get():
+                return k
+        return focusplan.FOCUS_NONE
+
     def _trailer_key(self):
         for k, label in replaywriter.TRAILERS:
             if label == self.trailer_var.get():
@@ -434,6 +451,21 @@ class App(tk.Tk):
         finally:
             self._syncing = False
 
+    def _write_focus_plan(self, target, spans, seconds, focus):
+        switches = focusplan.build(self.model, self.overtakes, self.ticked, spans, focus)
+        doc = focusplan.document(self.model, target, switches, seconds, focus)
+        try:
+            sidecar, active = focusplan.save(doc, target, focusplan.documents_ac_folder())
+        except OSError as exc:
+            return "The camera plan could not be written: %s" % exc
+        text = "Camera plan (%d switches): %s" % (len(switches), sidecar)
+        if active:
+            text += "\nThe Overtake Focus app in the game reads: %s" % active
+        else:
+            text += ("\nThe Documents\\Assetto Corsa folder was not found: copy this file to "
+                     "Documents\\Assetto Corsa\\overtake_focus\\active.json")
+        return text
+
     def save_replay(self):
         if not self.model:
             messagebox.showinfo("Save new replay", "Open a replay first.")
@@ -447,7 +479,8 @@ class App(tk.Tk):
                                  "so it cannot be cut into a new replay.")
             return
         key = self._trailer_key()
-        save_config(trailer=key)
+        focus = self._focus_key()
+        save_config(trailer=key, focus=focus)
         stem = os.path.splitext(os.path.basename(self.replay.path))[0]
         target = filedialog.asksaveasfilename(
             title="Save new replay", defaultextension=".acreplay",
@@ -465,10 +498,12 @@ class App(tk.Tk):
         finally:
             self.config(cursor="")
         seconds = frames * self.replay.interval_ms / 1000.0
-        messagebox.showinfo(
-            "Replay saved", "%d clip(s), %s long, %.1f MB:\n%s\n\nCopy it to your Assetto Corsa replay "
-            "folder (Documents\\Assetto Corsa\\replay) to play it in the game." % (
-                len(spans), analysis.fmt_clock(seconds), size / 1e6, target))
+        text = ("%d clip(s), %s long, %.1f MB:\n%s\n\nCopy it to your Assetto Corsa replay folder "
+                "(Documents\\Assetto Corsa\\replay) to play it in the game." % (
+                    len(spans), analysis.fmt_clock(seconds), size / 1e6, target))
+        if focus != focusplan.FOCUS_NONE:
+            text += "\n\n" + self._write_focus_plan(target, spans, seconds, focus)
+        messagebox.showinfo("Replay saved", text)
 
     TICK_ON, TICK_OFF = "\u2611", "\u2610"
 

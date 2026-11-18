@@ -66,3 +66,15 @@ Per overtake you can change this: select one or more rows in the list and use th
 **Save new replay...** writes a new `.acreplay` with only the clips, one after the other. The original is never changed or overwritten. Copy the result to `Documents\Assetto Corsa\replay` to play it in the game. The cars jump from the end of one clip to the start of the next.
 
 *Extra data*: replays recorded with the Custom Shaders Patch end with race settings and shader data that belong to the original frames. **None** (default) leaves all of that out, as the known replay merger tools do. **Race settings only** keeps the settings but not the per-frame shader data. **Everything, unchanged** keeps all of it, although the per-frame parts no longer match the cut replay. If the game does not accept a new replay, try another option.
+
+## Camera follows the overtaking car (needs the in-game app)
+
+A replay file does not store which car the camera follows; the game decides that while playing (it starts on the car of the person who recorded the replay). So *Save new replay...* can also write a **camera plan**: with *Camera follows* set to *Car that overtakes* (or *Car that is passed*), a small JSON file `<name>.focus.json` is written next to the new replay, and a copy to `Documents\Assetto Corsa\overtake_focus\active.json`. At the start of each clip the plan switches to the car of that overtake; when a clip holds several overtakes it switches halfway between them.
+
+The in-game part is the CSP Lua app in `lua_app\OvertakeFocus`:
+
+1. Copy the folder `OvertakeFocus` to `<Assetto Corsa folder>\apps\lua\OvertakeFocus`.
+2. Start the game, open the replay saved by this program, and switch on **Overtake Focus** in the apps list. Its window shows the plan, the replay time, the followed car, and which replay fields this CSP version offers.
+3. While the replay plays the app switches the followed car by itself. *Follow the plan* turns it off; *Reload plan* reads the file again (the plan of the last saved replay is used).
+
+This app was written without being able to run the game (tested only for the plan file). If the window shows "NO" or "not found" for a field, or the followed car does not change, send a screenshot of the app window.
