@@ -289,11 +289,12 @@ class MapView:
                 c.create_text(px + 5, py - 6, anchor="w", text="+%ds" % (k // per_s),
                               font=("TkDefaultFont", 7), fill="#444444", tags="cars")
 
-    def zoom_to(self, cars, frame, metres=120.0, level="full"):
-        """Centre the map on `cars` at `frame`.
+    ZOOM_WIDTH_M = {"full": 120.0, "half": 450.0}
 
-        level "full": about `metres` of track across; "half": halfway between that and the
-        whole track (in zoom factor); "off": leave the view alone."""
+    def zoom_to(self, cars, frame, metres=None, level="full"):
+        """Centre the map on `cars` at `frame`, showing a fixed stretch of track across the
+        smaller side of the map (+ the distance between the cars): "full" about 120 m,
+        "half" about 450 m, "off" leaves the view alone."""
         if level == "off" or not self.view or not self.fit_view:
             return
         pts = [self.model.replay.cars[i].positions[frame] for i in cars]
@@ -303,11 +304,11 @@ class MapView:
         cx = sum(p[0] for p in pts) / len(pts)
         cz = sum(p[2] for p in pts) / len(pts)
         w, h = self._size()
-        spread = max([math.hypot(p[0] - cx, p[2] - cz) for p in pts] + [0.0]) * 2 + metres
-        scale = min(w, h) / spread
-        scale = min(max(scale, self.fit_view[2]), self.fit_view[2] * 60)
-        if level == "half":
-            scale = math.sqrt(scale * self.fit_view[2])
+        spread = max([math.hypot(p[0] - cx, p[2] - cz) for p in pts] + [0.0]) * 2
+        width = metres if metres else self.ZOOM_WIDTH_M.get(level, 120.0)
+        scale = min(w, h) / (spread + width)
+        # never zoomed out further than the whole track
+        scale = max(scale, self.fit_view[2])
         self.view = (cx, cz, scale)
         self.user_moved = True
         self.redraw()

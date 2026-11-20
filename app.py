@@ -364,6 +364,9 @@ class App(tk.Tk):
         self.trail_var.set(str(self.map.trail_s))
         self.ahead_var.set(str(self.map.ahead_s))
         self.map.initials = bool(self.initials_var.get())
+        if redraw and self.model and self.selected_overtake is not None:     # show the new zoom at once
+            o = self.overtakes[self.selected_overtake]
+            self.map.zoom_to((o.overtaker, o.passed), o.frame, level=self._zoom_level())
         save_config(map_trail_s=self.map.trail_s, map_ahead_s=self.map.ahead_s,
                     map_zoom=self._zoom_level(), map_initials=self.map.initials)
         if redraw and self.model:
