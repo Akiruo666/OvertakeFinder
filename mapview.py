@@ -36,6 +36,8 @@ class MapView:
         self.trail_s = TRAIL_S
         self.ahead_s = AHEAD_S
         self.units = analysis.METRIC
+        self.initials = True
+        self.labels = []
         canvas.bind("<Configure>", self._on_configure)
         canvas.bind("<MouseWheel>", self._on_wheel)
         canvas.bind("<Button-4>", lambda e: self._zoom(e.x, e.y, 1.25))
@@ -47,6 +49,7 @@ class MapView:
     # ------------------------------------------------------------ model
     def set_model(self, model, roadmap=None):
         self.model = model
+        self.labels = car_labels(model.replay) if model else []
         self.shape = None
         self.bounds = None
         self.view = self.fit_view = None
@@ -223,9 +226,12 @@ class MapView:
             c.create_oval(px - r, py - r, px + r, py + r, fill=fill, outline="#111111" if i in focus else "white",
                           width=2 if i in focus else 1, tags="cars")
             alone = all(j == i or abs(screen[j][0] - px) > 70 or abs(screen[j][1] - py) > 14 for j in screen)
-            if i in focus or (not many and alone):
+            if i in focus or (not many and alone and not self.initials):
                 name = car.driver if len(car.driver) < 16 else car.driver[:14] + ".."
                 c.create_text(px + r + 3, py, anchor="w", text=name, font=("TkDefaultFont", 8), tags="cars")
+            elif self.initials:
+                c.create_text(px + r + 2, py, anchor="w", text=self.labels[i] if self.labels else initials(car.driver),
+                              font=("TkDefaultFont", 7), fill="#333333", tags="cars")
         t = model.time_s(f)
         c.create_text(8, 6, anchor="nw", fill="#444444", font=("TkDefaultFont", 9),
                       text="Replay time %s" % _clock(t), tags="cars")
@@ -283,9 +289,12 @@ class MapView:
                 c.create_text(px + 5, py - 6, anchor="w", text="+%ds" % (k // per_s),
                               font=("TkDefaultFont", 7), fill="#444444", tags="cars")
 
-    def zoom_to(self, cars, frame, metres=120.0):
-        """Centre the map on `cars` at `frame`, showing about `metres` of track across."""
-        if not self.view or not self.fit_view:
+    def zoom_to(self, cars, frame, metres=120.0, level="full"):
+        """Centre the map on `cars` at `frame`.
+
+        level "full": about `metres` of track across; "half": halfway between that and the
+        whole track (in zoom factor); "off": leave the view alone."""
+        if level == "off" or not self.view or not self.fit_view:
             return
         pts = [self.model.replay.cars[i].positions[frame] for i in cars]
         pts = [p for p in pts if p != (0.0, 0.0, 0.0)]
@@ -297,6 +306,8 @@ class MapView:
         spread = max([math.hypot(p[0] - cx, p[2] - cz) for p in pts] + [0.0]) * 2 + metres
         scale = min(w, h) / spread
         scale = min(max(scale, self.fit_view[2]), self.fit_view[2] * 60)
+        if level == "half":
+            scale = math.sqrt(scale * self.fit_view[2])
         self.view = (cx, cz, scale)
         self.user_moved = True
         self.redraw()
@@ -318,6 +329,29 @@ class MapView:
         self.c.create_text((x1 + x2) / 2 + 6, (y1 + y2) / 2 - 8, anchor="w", font=("TkDefaultFont", 8),
                            fill="#222222", text="%.0f %s" % (analysis.short_length(gap, self.units), short),
                            tags="cars")
+
+
+def car_labels(replay):
+    """Short label per car index: initials, with a number when several cars share them."""
+    base = [initials(c.driver or "?") for c in replay.cars]
+    count = {}
+    for b in base:
+        count[b] = count.get(b, 0) + 1
+    seen = {}
+    out = []
+    for b in base:
+        if count[b] > 1:
+            seen[b] = seen.get(b, 0) + 1
+            out.append("%s%d" % (b, seen[b]))
+        else:
+            out.append(b)
+    return out
+
+
+def initials(name):
+    """First letter of every word of a name ("Bas Leinders" -> "BL"); symbols are skipped."""
+    letters = [w[0].upper() for w in name.replace("-", " ").replace("_", " ").split() if w[0].isalnum()]
+    return "".join(letters) or "?"
 
 
 def _quad(line, i, j, left, right):

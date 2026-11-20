@@ -188,9 +188,9 @@ class App(tk.Tk):
         paned.pack(fill="both", expand=True)
 
         drivers = ttk.Labelframe(paned, text="Drivers and lap times", padding=4)
-        cols = ("pos", "driver", "nation", "team", "laps", "best", "times", "km")
+        cols = ("pos", "driver", "init", "nation", "team", "laps", "best", "times", "km")
         self.drivers_tree = scrolled_tree(drivers, horizontal=True, columns=cols, show="headings", height=7)
-        heads = (("pos", "Pos", 40), ("driver", "Driver", 190), ("nation", "Nat", 45),
+        heads = (("pos", "Pos", 40), ("driver", "Driver", 190), ("init", "Map label", 70), ("nation", "Nat", 45),
                  ("team", "Team / livery", 190), ("laps", "Laps", 45),
                  ("best", "Best lap", 80), ("times", "Lap times", 210), ("km", "Driven km", 80))
         for key, text, width in heads:
@@ -307,6 +307,18 @@ class App(tk.Tk):
         for spin in (sp1, sp2):
             spin.bind("<Return>", lambda e: self._on_map_options())
             spin.bind("<FocusOut>", lambda e: self._on_map_options())
+        mbar2 = ttk.Frame(map_box)
+        mbar2.pack(fill="x", pady=(2, 0))
+        ttk.Label(mbar2, text="Zoom on selecting an overtake:").pack(side="left")
+        saved = cfg.get("map_zoom")
+        self.zoom_var = tk.StringVar(value=dict(self.ZOOM_CHOICES).get(saved, "Half"))
+        zbox = ttk.Combobox(mbar2, textvariable=self.zoom_var, state="readonly", width=7,
+                            values=[label for _k, label in self.ZOOM_CHOICES])
+        zbox.pack(side="left", padx=4)
+        zbox.bind("<<ComboboxSelected>>", lambda e: self._on_map_options())
+        self.initials_var = tk.BooleanVar(value=bool(cfg.get("map_initials", True)))
+        ttk.Checkbutton(mbar2, text="Initials on other cars", variable=self.initials_var,
+                        command=self._on_map_options).pack(side="left", padx=(12, 0))
         self.map_canvas = tk.Canvas(map_box, background=mapview.GRASS, height=200, width=200, highlightthickness=0)
         self.map_canvas.pack(fill="both", expand=True)
         self.map = mapview.MapView(self.map_canvas, COLORS)
@@ -335,6 +347,12 @@ class App(tk.Tk):
         self._label_chart_button()
         save_config(chart_visible=self.chart_visible)
 
+    ZOOM_CHOICES = (("off", "Off"), ("half", "Half"), ("full", "Full"))
+
+    def _zoom_level(self):
+        label = self.zoom_var.get()
+        return next((k for k, text in self.ZOOM_CHOICES if text == label), "half")
+
     def _on_map_options(self, redraw=True):
         def seconds(var, fallback):
             try:
@@ -345,7 +363,9 @@ class App(tk.Tk):
         self.map.ahead_s = seconds(self.ahead_var, mapview.AHEAD_S)
         self.trail_var.set(str(self.map.trail_s))
         self.ahead_var.set(str(self.map.ahead_s))
-        save_config(map_trail_s=self.map.trail_s, map_ahead_s=self.map.ahead_s)
+        self.map.initials = bool(self.initials_var.get())
+        save_config(map_trail_s=self.map.trail_s, map_ahead_s=self.map.ahead_s,
+                    map_zoom=self._zoom_level(), map_initials=self.map.initials)
         if redraw and self.model:
             self._update_map()
 
@@ -762,7 +782,9 @@ class App(tk.Tk):
         self.ov_tree.selection_set(str(index))
         self.ov_tree.see(str(index))
         self._sync_sliders()
-        self.set_frame(self.overtakes[index].frame)
+        o = self.overtakes[index]
+        self.map.zoom_to((o.overtaker, o.passed), o.frame, level=self._zoom_level())
+        self.set_frame(o.frame)
         self.chart.draw()
 
     def _clip_text(self, index, k):
@@ -825,7 +847,7 @@ class App(tk.Tk):
             self._show_clip_panel(True)
             if self.model and len(sel) == 1:
                 o = self.overtakes[index]
-                self.map.zoom_to((o.overtaker, o.passed), o.frame)
+                self.map.zoom_to((o.overtaker, o.passed), o.frame, level=self._zoom_level())
             if index != self.selected_overtake:
                 self.selected_overtake = index
                 self.set_frame(self.overtakes[index].frame)
@@ -890,11 +912,11 @@ class App(tk.Tk):
             analysis.fmt_clock(replay.time_s(replay.frame_count - 1)),
             "yes" if line is not None else "no (gaps estimated)",
             "yes" if roadmap is not None else "no (tyre dirt used)"))
+        self.map.set_model(model, roadmap)
         self.fill_drivers()
         self.fill_overtakes()
         self.scale.configure(to=replay.frame_count - 1)
         self.chart.set_model()
-        self.map.set_model(model, roadmap)
         self.set_frame(0)
 
     def _offer_report(self, path, exc):
@@ -928,7 +950,8 @@ class App(tk.Tk):
                 rank = pos
             else:
                 km, times, rank = "-", "no position data in this replay", "-"
-            tree.insert("", "end", values=(rank, car.driver or "(no name)", car.nation,
+            tree.insert("", "end", values=(rank, car.driver or "(no name)", self.map.labels[car.index],
+                                           car.nation,
                                            car.team or car.skin, len(car.lap_times_ms),
                                            analysis.fmt_lap(car.best_lap_ms), times, km))
 
