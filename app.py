@@ -713,10 +713,13 @@ class App(tk.Tk):
         stem = os.path.splitext(os.path.basename(self.replay.path))[0]
         target = filedialog.asksaveasfilename(
             title="Save new replay", defaultextension=".acreplay",
-            initialdir=os.path.dirname(self.replay.path), initialfile=stem + "_overtakes.acreplay",
+            initialdir=os.path.dirname(self.replay.path), initialfile=stem + "_export.acreplay",
             filetypes=[("AC replay", "*.acreplay")])
         if not target:
             return
+        if os.path.normcase(os.path.abspath(target)) == os.path.normcase(os.path.abspath(self.replay.path)):
+            # never overwrite the replay we are reading from
+            target = os.path.splitext(target)[0] + "_export.acreplay"
         self.config(cursor="watch")
         self.update_idletasks()
         try:

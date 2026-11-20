@@ -38,7 +38,10 @@ class MapView:
         self.units = analysis.METRIC
         self.initials = True
         self.labels = []
+        self._hits = []                   # (x, y, car index) of the cars on screen
         canvas.bind("<Configure>", self._on_configure)
+        canvas.bind("<Motion>", self._on_motion)
+        canvas.bind("<Leave>", lambda e: canvas.delete("hover"))
         canvas.bind("<MouseWheel>", self._on_wheel)
         canvas.bind("<Button-4>", lambda e: self._zoom(e.x, e.y, 1.25))
         canvas.bind("<Button-5>", lambda e: self._zoom(e.x, e.y, 0.8))
@@ -186,6 +189,8 @@ class MapView:
         """Cars at self.frame; the app sets frame, selected and highlight first."""
         c = self.c
         c.delete("cars")
+        c.delete("hover")
+        self._hits = []
         if self.model is None or not self.view:
             return
         model, replay = self.model, self.model.replay
@@ -221,6 +226,7 @@ class MapView:
                 if ahead_n > 0 and f < model.frames - 1:
                     self._draw_ahead(car, f, ahead_n, step_s, col, labels=(not self.highlight or i == self.highlight[0]))
             px, py = screen[i]
+            self._hits.append((px, py, i))
             r = 7 if i in focus else 5
             fill = col if (i in focus or not dim) else _fade(col, 0.6)
             c.create_oval(px - r, py - r, px + r, py + r, fill=fill, outline="#111111" if i in focus else "white",
@@ -231,10 +237,29 @@ class MapView:
                 c.create_text(px + r + 3, py, anchor="w", text=name, font=("TkDefaultFont", 8), tags="cars")
             elif self.initials:
                 c.create_text(px + r + 2, py, anchor="w", text=self.labels[i] if self.labels else initials(car.driver),
-                              font=("TkDefaultFont", 7), fill="#333333", tags="cars")
+                              font=("TkDefaultFont", 10, "bold"), fill="#222222", tags="cars")
         t = model.time_s(f)
         c.create_text(8, 6, anchor="nw", fill="#444444", font=("TkDefaultFont", 9),
                       text="Replay time %s" % _clock(t), tags="cars")
+
+    def _on_motion(self, event):
+        """Show the full name of the car under the pointer."""
+        c = self.c
+        c.delete("hover")
+        if self.model is None:
+            return
+        best = None
+        for x, y, i in self._hits:
+            d = math.hypot(x - event.x, y - event.y)
+            if d <= 14 and (best is None or d < best[0]):
+                best = (d, i)
+        if best:
+            name = self.model.replay.cars[best[1]].driver or "?"
+            tid = c.create_text(event.x + 12, event.y - 14, anchor="w", text=name,
+                                font=("TkDefaultFont", 10, "bold"), fill="#111111", tags="hover")
+            x0, y0, x1, y1 = c.bbox(tid)
+            bg = c.create_rectangle(x0 - 3, y0 - 1, x1 + 3, y1 + 1, fill="#fffbe6", outline="#888888", tags="hover")
+            c.tag_lower(bg, tid)
 
     def _recentre(self, f):
         """Zoomed in and the focus cars left the picture: move the view onto them.
