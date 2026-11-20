@@ -11,12 +11,14 @@ Track shape, best source first:
 """
 import math
 
+import analysis
 import surface
 
 ASPHALT = "#6b6b6b"
 GRASS = "#e9efe3"
 MARGIN_PX = 18
-TRAIL_S = 4.0
+TRAIL_S = 4
+AHEAD_S = 3
 
 
 class MapView:
@@ -29,7 +31,12 @@ class MapView:
         self.view = None                  # (centre_x, centre_z, pixels per metre)
         self.fit_view = None
         self._drag = None
-        canvas.bind("<Configure>", lambda e: self.redraw())
+        self.user_moved = False           # zoomed/panned by hand: do not refit on resize
+        self._size_seen = None
+        self.trail_s = TRAIL_S
+        self.ahead_s = AHEAD_S
+        self.units = analysis.METRIC
+        canvas.bind("<Configure>", self._on_configure)
         canvas.bind("<MouseWheel>", self._on_wheel)
         canvas.bind("<Button-4>", lambda e: self._zoom(e.x, e.y, 1.25))
         canvas.bind("<Button-5>", lambda e: self._zoom(e.x, e.y, 0.8))
@@ -87,7 +94,16 @@ class MapView:
         scale = min((w - 2 * MARGIN_PX) / max(x1 - x0, 1.0), (h - 2 * MARGIN_PX) / max(z1 - z0, 1.0))
         return ((x0 + x1) / 2, (z0 + z1) / 2, max(scale, 1e-4))
 
+    def _on_configure(self, _event=None):
+        size = self._size()
+        if size != self._size_seen:
+            self._size_seen = size
+            if not self.user_moved and self.bounds:
+                self.view = self.fit_view = self._fit()
+        self.redraw()
+
     def reset_view(self):
+        self.user_moved = False
         self.view = self.fit_view = self._fit()
         self.redraw()
 
@@ -109,6 +125,7 @@ class MapView:
         s2 = min(max(s * factor, self.fit_view[2] * 0.5), self.fit_view[2] * 60)
         w, h = self._size()
         self.view = (wx - (px - w / 2) / s2, wz + (py - h / 2) / s2, s2)
+        self.user_moved = True
         self.redraw()
 
     def _on_wheel(self, event):
@@ -124,6 +141,7 @@ class MapView:
         self._drag = (event.x, event.y)
         cx, cz, s = self.view
         self.view = (cx - dx / s, cz + dy / s, s)
+        self.user_moved = True
         self.redraw()
 
     # ------------------------------------------------------------ drawing
@@ -172,13 +190,16 @@ class MapView:
         many = len(model.active) > 12
         focus = set(self.highlight) | ({self.selected} if self.selected is not None else set())
         dim = bool(self.highlight)
-        trail_n = int(TRAIL_S / (replay.interval_ms / 1000.0))
+        step_s = replay.interval_ms / 1000.0
+        trail_n = int(self.trail_s / step_s)
+        ahead_n = int(self.ahead_s / step_s)
         order = sorted(model.active, key=lambda i: i in focus)       # focus cars on top
         screen = {}
         for i in model.active:
             p = replay.cars[i].positions[f]
             if p != (0.0, 0.0, 0.0):
                 screen[i] = self._to_screen(p[0], p[2])
+        self._draw_gap_line(f, screen)
         for i in order:
             car = replay.cars[i]
             pos = car.positions[f]
@@ -191,6 +212,8 @@ class MapView:
                     trail.extend(self._to_screen(car.positions[g][0], car.positions[g][2]))
                 if len(trail) >= 4:
                     c.create_line(*trail, fill=col, width=2, tags="cars")
+                if ahead_n > 0 and f < model.frames - 1:
+                    self._draw_ahead(car, f, ahead_n, step_s, col, labels=(not self.highlight or i == self.highlight[0]))
             px, py = screen[i]
             r = 7 if i in focus else 5
             fill = col if (i in focus or not dim) else _fade(col, 0.6)
@@ -203,6 +226,64 @@ class MapView:
         t = model.time_s(f)
         c.create_text(8, 6, anchor="nw", fill="#444444", font=("TkDefaultFont", 9),
                       text="Replay time %s" % _clock(t), tags="cars")
+
+    def _draw_ahead(self, car, f, ahead_n, step_s, col, labels=True):
+        """Dashed line along where the car goes next, with a dot every second."""
+        c = self.c
+        last = min(self.model.frames - 1, f + ahead_n)
+        pts = []
+        for g in range(f, last + 1, 3):
+            pts.extend(self._to_screen(car.positions[g][0], car.positions[g][2]))
+        if last % 3:
+            pts.extend(self._to_screen(car.positions[last][0], car.positions[last][2]))
+        if len(pts) >= 4:
+            c.create_line(*pts, fill=col, width=2, dash=(5, 4), tags="cars")
+        per_s = max(1, int(round(1.0 / step_s)))
+        for k in range(per_s, ahead_n + 1, per_s):
+            g = f + k
+            if g > last:
+                break
+            px, py = self._to_screen(car.positions[g][0], car.positions[g][2])
+            c.create_oval(px - 3, py - 3, px + 3, py + 3, fill="white", outline=col, width=2, tags="cars")
+            if labels:
+                c.create_text(px + 5, py - 6, anchor="w", text="+%ds" % (k // per_s),
+                              font=("TkDefaultFont", 7), fill="#444444", tags="cars")
+
+    def zoom_to(self, cars, frame, metres=120.0):
+        """Centre the map on `cars` at `frame`, showing about `metres` of track across."""
+        if not self.view or not self.fit_view:
+            return
+        pts = [self.model.replay.cars[i].positions[frame] for i in cars]
+        pts = [p for p in pts if p != (0.0, 0.0, 0.0)]
+        if not pts:
+            return
+        cx = sum(p[0] for p in pts) / len(pts)
+        cz = sum(p[2] for p in pts) / len(pts)
+        w, h = self._size()
+        spread = max([math.hypot(p[0] - cx, p[2] - cz) for p in pts] + [0.0]) * 2 + metres
+        scale = min(w, h) / spread
+        scale = min(max(scale, self.fit_view[2]), self.fit_view[2] * 60)
+        self.view = (cx, cz, scale)
+        self.user_moved = True
+        self.redraw()
+
+    def _draw_gap_line(self, f, screen):
+        """Line between the two cars of the selected overtake, labelled with the gap."""
+        if len(self.highlight) != 2:
+            return
+        a, b = self.highlight
+        if a not in screen or b not in screen:
+            return
+        model = self.model
+        if model.progress[a] is None or model.progress[b] is None:
+            return
+        gap = abs(model.progress[a][f] - model.progress[b][f])
+        short = analysis.UNIT_NAMES[self.units][0]
+        (x1, y1), (x2, y2) = screen[a], screen[b]
+        self.c.create_line(x1, y1, x2, y2, fill="#222222", width=1, dash=(2, 3), tags="cars")
+        self.c.create_text((x1 + x2) / 2 + 6, (y1 + y2) / 2 - 8, anchor="w", font=("TkDefaultFont", 8),
+                           fill="#222222", text="%.0f %s" % (analysis.short_length(gap, self.units), short),
+                           tags="cars")
 
 
 def _quad(line, i, j, left, right):

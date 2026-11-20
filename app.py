@@ -6,6 +6,7 @@ Needs only Python 3.9+ with Tkinter (included in the standard Windows installer)
 """
 import json
 import os
+import re
 import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -89,7 +90,9 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("AC Overtake Finder - Race overview")
-        self.geometry("1280x980")
+        cfg0 = load_config()
+        geo = cfg0.get("geometry")
+        self.geometry(geo if isinstance(geo, str) and re.fullmatch(r"\d+x\d+([+-]-?\d+){0,2}", geo) else "1280x860")
         self.minsize(820, 640)
         self.replay = None
         self.model = None
@@ -111,6 +114,7 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------------ UI
     def _build(self):
+        cfg = load_config()
         top = ttk.Frame(self, padding=8)
         top.pack(fill="x")
         ttk.Button(top, text="Open replay...", command=self.open_dialog).pack(side="left")
@@ -129,13 +133,60 @@ class App(tk.Tk):
         self.path_var = tk.StringVar(value="No replay loaded")
         ttk.Label(top, textvariable=self.path_var).pack(side="left", padx=10)
 
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill="both", expand=True, padx=8, pady=(0, 4))
+        race_tab, over_tab, save_tab = ttk.Frame(self.notebook), ttk.Frame(self.notebook), ttk.Frame(self.notebook)
+        self.notebook.add(race_tab, text="  Race  ")
+        self.notebook.add(over_tab, text="  Overtakes  ")
+        self.notebook.add(save_tab, text="  Save  ")
+        self._build_race(race_tab, cfg)
+        self._build_overtakes(over_tab, cfg)
+        self._build_save(save_tab)
+        self.notebook.bind("<<NotebookTabChanged>>", lambda e: self._on_tab_changed())
+
+        # Time control, visible on every tab
+        bar = ttk.Frame(self, padding=(8, 0))
+        bar.pack(fill="x")
+        ttk.Button(bar, text="<<", width=4, command=lambda: self.step(-100)).pack(side="left")
+        ttk.Button(bar, text="<", width=4, command=lambda: self.step(-10)).pack(side="left")
+        self.scale = ttk.Scale(bar, from_=0, to=1, orient="horizontal", command=self._on_scale)
+        self.scale.pack(side="left", fill="x", expand=True, padx=6)
+        ttk.Button(bar, text=">", width=4, command=lambda: self.step(10)).pack(side="left")
+        ttk.Button(bar, text=">>", width=4, command=lambda: self.step(100)).pack(side="left")
+        self.frame_var = tk.StringVar(value="Frame - / -")
+        ttk.Label(self, textvariable=self.frame_var, padding=(8, 0, 8, 2)).pack(fill="x")
+
+        ttk.Label(self, padding=(8, 0, 8, 6), foreground="#666666",
+                  text="Distance is measured from the start line (negative on the grid) along the track's "
+                       "racing line, or from the distance driven when no track data is available. "
+                       "Times are replay time from the start of the recording.").pack(fill="x")
+
+        self.bind("<Left>", lambda e: self.step(-10))
+        self.bind("<Right>", lambda e: self.step(10))
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._apply_unit_headings()
+        tab = cfg.get("tab")
+        if isinstance(tab, int) and 0 <= tab < 3:
+            self.notebook.select(tab)
+
+    # ---- tab 1: race overview
+    def _build_race(self, parent, cfg):
+        head = ttk.Frame(parent)
+        head.pack(fill="x", pady=(2, 2))
+        self.track_open = bool(cfg.get("track_panel_open", False))
+        self.track_btn = ttk.Button(head, text="", width=14, command=self.toggle_track_panel)
+        self.track_btn.pack(side="left")
+        self.summary_var = tk.StringVar(value="Open a replay to start.")
+        ttk.Label(head, textvariable=self.summary_var).pack(side="left", padx=8)
+        self.track_body = ttk.Frame(parent, padding=(4, 0, 4, 4))
         self.info_var = tk.StringVar(value="")
-        ttk.Label(self, textvariable=self.info_var, padding=(8, 0)).pack(fill="x")
+        ttk.Label(self.track_body, textvariable=self.info_var, justify="left").pack(anchor="w")
+        ttk.Button(self.track_body, text="Game folder...", command=self.choose_game_folder).pack(anchor="w", pady=(4, 0))
+        self._apply_track_panel(head)
 
-        paned = ttk.Panedwindow(self, orient="vertical")
-        paned.pack(fill="both", expand=True, padx=8, pady=8)
+        paned = ttk.Panedwindow(parent, orient="vertical")
+        paned.pack(fill="both", expand=True)
 
-        # Drivers table
         drivers = ttk.Labelframe(paned, text="Drivers and lap times", padding=4)
         cols = ("pos", "driver", "nation", "team", "laps", "best", "times", "km")
         self.drivers_tree = scrolled_tree(drivers, horizontal=True, columns=cols, show="headings", height=7)
@@ -145,21 +196,9 @@ class App(tk.Tk):
         for key, text, width in heads:
             self.drivers_tree.heading(key, text=text)
             self.drivers_tree.column(key, width=width, anchor="w" if key in ("driver", "team", "times") else "center")
-        paned.add(drivers, weight=2)
+        paned.add(drivers, weight=3)
 
-        # Standings at a chosen moment
-        stand = ttk.Labelframe(paned, text="Standings at selected moment", padding=4)
-        bar = ttk.Frame(stand)
-        bar.pack(fill="x")
-        ttk.Button(bar, text="<<", width=4, command=lambda: self.step(-100)).pack(side="left")
-        ttk.Button(bar, text="<", width=4, command=lambda: self.step(-10)).pack(side="left")
-        self.scale = ttk.Scale(bar, from_=0, to=1, orient="horizontal", command=self._on_scale)
-        self.scale.pack(side="left", fill="x", expand=True, padx=6)
-        ttk.Button(bar, text=">", width=4, command=lambda: self.step(10)).pack(side="left")
-        ttk.Button(bar, text=">>", width=4, command=lambda: self.step(100)).pack(side="left")
-        self.frame_var = tk.StringVar(value="Frame - / -")
-        ttk.Label(stand, textvariable=self.frame_var).pack(anchor="w")
-
+        stand = ttk.Labelframe(paned, text="Standings at the selected moment (use the time bar below)", padding=4)
         scols = ("pos", "driver", "lap", "ahead", "leader", "speed", "dist", "distlong")
         self.stand_tree = scrolled_tree(stand, columns=scols, show="headings", height=7)
         # Headings that carry a unit are set by _apply_unit_headings().
@@ -171,96 +210,215 @@ class App(tk.Tk):
             self.stand_tree.column(key, width=width, anchor="w" if key == "driver" else "center")
         paned.add(stand, weight=2)
 
-        # Overtakes
-        ov = ttk.Labelframe(paned, text="Overtakes", padding=4)
-        obar = ttk.Frame(ov)
-        obar.pack(fill="x")
-        ttk.Label(obar, text="Driver:").pack(side="left")
+    def _apply_track_panel(self, head=None):
+        self.track_btn.configure(text=("v Track data" if self.track_open else "> Track data"))
+        if self.track_open:
+            self.track_body.pack(fill="x", after=head) if head is not None else self.track_body.pack(fill="x")
+        else:
+            self.track_body.pack_forget()
+
+    def toggle_track_panel(self):
+        self.track_open = not self.track_open
+        self._apply_track_panel(self.track_btn.master)
+        save_config(track_panel_open=self.track_open)
+
+    # ---- tab 2: overtakes
+    def _build_overtakes(self, parent, cfg):
+        row1 = ttk.Frame(parent)
+        row1.pack(fill="x", pady=(2, 2))
+        ttk.Label(row1, text="Driver:").pack(side="left")
         self.driver_var = tk.StringVar(value=self.ALL_DRIVERS)
-        self.driver_box = ttk.Combobox(obar, textvariable=self.driver_var, state="readonly",
+        self.driver_box = ttk.Combobox(row1, textvariable=self.driver_var, state="readonly",
                                        values=[self.ALL_DRIVERS], width=30)
         self.driver_box.pack(side="left", padx=6)
         self.driver_box.bind("<<ComboboxSelected>>", lambda e: self.fill_overtakes())
         self.by_var = tk.BooleanVar(value=True)
         self.passed_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(obar, text="Overtakes by this driver", variable=self.by_var,
+        ttk.Checkbutton(row1, text="Overtakes by this driver", variable=self.by_var,
                         command=self.fill_overtakes).pack(side="left", padx=(6, 0))
-        ttk.Checkbutton(obar, text="Driver overtaken", variable=self.passed_var,
+        ttk.Checkbutton(row1, text="Driver overtaken", variable=self.passed_var,
                         command=self.fill_overtakes).pack(side="left", padx=(6, 0))
-        obar2 = ttk.Frame(ov)
-        obar2.pack(fill="x", pady=(4, 2))
-        ttk.Button(obar2, text="Tick all shown", command=lambda: self.tick_shown(True)).pack(side="left")
-        ttk.Button(obar2, text="Untick all shown", command=lambda: self.tick_shown(False)).pack(side="left", padx=6)
-        self.ov_count = tk.StringVar(value="")
-        ttk.Label(obar2, textvariable=self.ov_count).pack(side="left", padx=10)
-        # Clip settings: defaults, extra data, save
-        obar3 = ttk.Frame(ov)
-        obar3.pack(fill="x", pady=(0, 2))
-        ttk.Label(obar3, text="Clip around each overtake - default:  before").pack(side="left")
+        ttk.Button(row1, text="Tick all shown", command=lambda: self.tick_shown(True)).pack(side="left", padx=(14, 0))
+        ttk.Button(row1, text="Untick all shown", command=lambda: self.tick_shown(False)).pack(side="left", padx=6)
+
+        row2 = ttk.Frame(parent)
+        row2.pack(fill="x", pady=(0, 4))
+        ttk.Label(row2, text="Default clip:  before").pack(side="left")
         self.before_var = tk.StringVar(value=str(self.default_before))
         self.after_var = tk.StringVar(value=str(self.default_after))
-        spin_before = ttk.Spinbox(obar3, from_=0, to=clips.MAX_CLIP_S, width=4, textvariable=self.before_var,
+        spin_before = ttk.Spinbox(row2, from_=0, to=clips.MAX_CLIP_S, width=4, textvariable=self.before_var,
                                   command=self._on_default_changed)
         spin_before.pack(side="left", padx=4)
-        ttk.Label(obar3, text="s   after").pack(side="left")
-        spin_after = ttk.Spinbox(obar3, from_=0, to=clips.MAX_CLIP_S, width=4, textvariable=self.after_var,
+        ttk.Label(row2, text="s   after").pack(side="left")
+        spin_after = ttk.Spinbox(row2, from_=0, to=clips.MAX_CLIP_S, width=4, textvariable=self.after_var,
                                  command=self._on_default_changed)
         spin_after.pack(side="left", padx=4)
         for spin in (spin_before, spin_after):          # typed values count too
             spin.bind("<Return>", lambda e: self._on_default_changed())
             spin.bind("<FocusOut>", lambda e: self._on_default_changed())
-        ttk.Label(obar3, text="s").pack(side="left")
-        ttk.Label(obar3, text="     Extra data:").pack(side="left")
-        self.trailer_var = tk.StringVar(value=self._trailer_label(load_config().get("trailer")))
-        ttk.Combobox(obar3, textvariable=self.trailer_var, state="readonly", width=22,
-                     values=[label for _k, label in replaywriter.TRAILERS]).pack(side="left", padx=4)
-        ttk.Label(obar3, text="   Camera follows:").pack(side="left")
-        self.focus_var = tk.StringVar(value=self._focus_label(load_config().get("focus")))
-        ttk.Combobox(obar3, textvariable=self.focus_var, state="readonly", width=24,
-                     values=[label for _k, label in focusplan.FOCUS_CHOICES]).pack(side="left", padx=4)
-        ttk.Button(obar3, text="Save new replay...", command=self.save_replay).pack(side="right")
+        ttk.Label(row2, text="s").pack(side="left")
+        self.ov_count = tk.StringVar(value="")
+        ttk.Label(row2, textvariable=self.ov_count).pack(side="left", padx=14)
+        self.chart_visible = bool(cfg.get("chart_visible", True))
+        self.chart_btn = ttk.Button(row2, text="", width=12, command=self.toggle_chart)
+        self.chart_btn.pack(side="right")
 
-        obar4 = ttk.Frame(ov)
-        obar4.pack(fill="x", pady=(0, 4))
-        ttk.Label(obar4, text="Selected overtake(s):").pack(side="left")
-        self.sel_before = self._slider_box(obar4, "Before", "before")
-        self.sel_after = self._slider_box(obar4, "After", "after")
-        ttk.Button(obar4, text="Reset to default", command=self.reset_selected_clips).pack(side="left", padx=10)
+        self.work = ttk.Panedwindow(parent, orient="vertical")
+        self.work.pack(fill="both", expand=True)
+        upper = ttk.Panedwindow(self.work, orient="horizontal")
 
+        # list (left) with the clip sliders under it
+        left = ttk.Frame(upper)
+        self.clip_panel = ttk.Frame(left, padding=(0, 4, 0, 0))
+        ttk.Label(self.clip_panel, text="Selected overtake(s):").pack(side="left")
+        self.sel_before = self._slider_box(self.clip_panel, "Before", "before")
+        self.sel_after = self._slider_box(self.clip_panel, "After", "after")
+        ttk.Button(self.clip_panel, text="Reset to default", command=self.reset_selected_clips).pack(side="left", padx=10)
+        self.clip_panel_shown = False
         ocols = ("tick", "time", "lap", "who", "passed", "before", "after", "notes")
-        self.ov_tree = scrolled_tree(ov, columns=ocols, show="headings", height=6, selectmode="extended")
+        self.ov_tree = scrolled_tree(left, columns=ocols, show="headings", height=10, selectmode="extended")
         for key, text, width in (("tick", "Use", 45), ("time", "Replay time", 90), ("lap", "Lap", 45),
-                                 ("who", "Overtaker", 190), ("passed", "Passed", 190),
+                                 ("who", "Overtaker", 170), ("passed", "Passed", 170),
                                  ("before", "Before (s)", 70), ("after", "After (s)", 70),
-                                 ("notes", "Notes", 260)):
+                                 ("notes", "Notes", 230)):
             self.ov_tree.heading(key, text=text)
             self.ov_tree.column(key, width=width, anchor="w" if key in ("who", "passed", "notes") else "center")
         self.ov_tree.bind("<<TreeviewSelect>>", self._on_overtake_select)
         self.ov_tree.bind("<Button-1>", self._on_overtake_click)
         self.ov_tree.bind("<space>", self._on_overtake_space)
-        paned.add(ov, weight=2)
+        upper.add(left, weight=3)
 
-        # Chart and track map side by side
-        bottom = ttk.Panedwindow(paned, orient="horizontal")
-        chart_box = ttk.Labelframe(bottom, text="Race chart (wheel = zoom, click = jump, click a marker = select overtake)",
-                                   padding=4)
-        self.chart = chartview.ChartView(chart_box, self, COLORS)
-        bottom.add(chart_box, weight=3)
-        map_box = ttk.Labelframe(bottom, text="Track map (wheel = zoom, drag = move, double-click = reset)", padding=4)
-        self.map_canvas = tk.Canvas(map_box, background=mapview.GRASS, height=240, width=320, highlightthickness=0)
+        # track map (right)
+        map_box = ttk.Labelframe(upper, text="Track map (wheel = zoom, drag = move, double-click = reset)", padding=4)
+        mbar = ttk.Frame(map_box)
+        mbar.pack(fill="x")
+        self.trail_var = tk.StringVar(value=str(cfg.get("map_trail_s", mapview.TRAIL_S)))
+        self.ahead_var = tk.StringVar(value=str(cfg.get("map_ahead_s", mapview.AHEAD_S)))
+        ttk.Label(mbar, text="Trail behind").pack(side="left")
+        sp1 = ttk.Spinbox(mbar, from_=0, to=20, width=3, textvariable=self.trail_var, command=self._on_map_options)
+        sp1.pack(side="left", padx=4)
+        ttk.Label(mbar, text="s   Look ahead").pack(side="left")
+        sp2 = ttk.Spinbox(mbar, from_=0, to=20, width=3, textvariable=self.ahead_var, command=self._on_map_options)
+        sp2.pack(side="left", padx=4)
+        ttk.Label(mbar, text="s").pack(side="left")
+        for spin in (sp1, sp2):
+            spin.bind("<Return>", lambda e: self._on_map_options())
+            spin.bind("<FocusOut>", lambda e: self._on_map_options())
+        self.map_canvas = tk.Canvas(map_box, background=mapview.GRASS, height=300, width=420, highlightthickness=0)
         self.map_canvas.pack(fill="both", expand=True)
         self.map = mapview.MapView(self.map_canvas, COLORS)
-        bottom.add(map_box, weight=2)
-        paned.add(bottom, weight=3)
+        self._on_map_options(redraw=False)
+        upper.add(map_box, weight=4)
+        self.work.add(upper, weight=4)
 
-        ttk.Label(self, padding=(8, 0, 8, 6), foreground="#666666",
-                  text="Distance is measured from the start line (negative on the grid) along the track's "
-                       "racing line, or from the distance driven when no track data is available. "
-                       "Times are replay time from the start of the recording.").pack(fill="x")
+        # chart (bottom, can be hidden)
+        self.chart_box = ttk.Labelframe(self.work, text="Race chart (wheel = zoom, click = jump, "
+                                        "click a marker = select overtake)", padding=4)
+        self.chart = chartview.ChartView(self.chart_box, self, COLORS)
+        if self.chart_visible:
+            self.work.add(self.chart_box, weight=2)
+        self._label_chart_button()
 
-        self.bind("<Left>", lambda e: self.step(-10))
-        self.bind("<Right>", lambda e: self.step(10))
-        self._apply_unit_headings()
+    def _label_chart_button(self):
+        self.chart_btn.configure(text="Hide chart" if self.chart_visible else "Show chart")
+
+    def toggle_chart(self):
+        self.chart_visible = not self.chart_visible
+        if self.chart_visible:
+            self.work.add(self.chart_box, weight=2)
+        else:
+            self.work.forget(self.chart_box)
+        self._label_chart_button()
+        save_config(chart_visible=self.chart_visible)
+
+    def _on_map_options(self, redraw=True):
+        def seconds(var, fallback):
+            try:
+                return max(0, min(20, int(round(float(var.get())))))
+            except (TypeError, ValueError):
+                return fallback
+        self.map.trail_s = seconds(self.trail_var, mapview.TRAIL_S)
+        self.map.ahead_s = seconds(self.ahead_var, mapview.AHEAD_S)
+        self.trail_var.set(str(self.map.trail_s))
+        self.ahead_var.set(str(self.map.ahead_s))
+        save_config(map_trail_s=self.map.trail_s, map_ahead_s=self.map.ahead_s)
+        if redraw and self.model:
+            self._update_map()
+
+    def _show_clip_panel(self, show):
+        if show and not self.clip_panel_shown:
+            self.clip_panel.pack(side="bottom", fill="x")
+        elif not show and self.clip_panel_shown:
+            self.clip_panel.pack_forget()
+        self.clip_panel_shown = show
+
+    # ---- tab 3: save
+    def _build_save(self, parent):
+        box = ttk.Frame(parent, padding=6)
+        box.pack(fill="both", expand=True)
+        ttk.Label(box, text="Clips of the ticked overtakes (in the order they will be in the new replay)").pack(anchor="w")
+        ccols = ("n", "start", "end", "length", "what")
+        self.clips_tree = scrolled_tree(box, columns=ccols, show="headings", height=8)
+        for key, text, width in (("n", "Clip", 45), ("start", "From", 80), ("end", "To", 80),
+                                 ("length", "Length", 70), ("what", "Overtakes in this clip", 600)):
+            self.clips_tree.heading(key, text=text)
+            self.clips_tree.column(key, width=width, anchor="w" if key == "what" else "center")
+        self.save_summary = tk.StringVar(value="")
+        ttk.Label(box, textvariable=self.save_summary).pack(anchor="w", pady=(4, 8))
+
+        opts = ttk.Labelframe(box, text="New replay", padding=8)
+        opts.pack(fill="x")
+        row = ttk.Frame(opts)
+        row.pack(fill="x", pady=2)
+        ttk.Label(row, text="Extra data from the original:", width=28).pack(side="left")
+        self.trailer_var = tk.StringVar(value=self._trailer_label(load_config().get("trailer")))
+        ttk.Combobox(row, textvariable=self.trailer_var, state="readonly", width=26,
+                     values=[label for _k, label in replaywriter.TRAILERS]).pack(side="left")
+        row = ttk.Frame(opts)
+        row.pack(fill="x", pady=2)
+        ttk.Label(row, text="Camera follows:", width=28).pack(side="left")
+        self.focus_var = tk.StringVar(value=self._focus_label(load_config().get("focus")))
+        ttk.Combobox(row, textvariable=self.focus_var, state="readonly", width=26,
+                     values=[label for _k, label in focusplan.FOCUS_CHOICES]).pack(side="left")
+        row = ttk.Frame(opts)
+        row.pack(fill="x", pady=(8, 0))
+        ttk.Button(row, text="Save new replay...", command=self.save_replay).pack(side="left")
+        ttk.Button(row, text="Export mp4... (planned)", state="disabled").pack(side="left", padx=8)
+
+    def _fill_clip_overview(self):
+        tree = self.clips_tree
+        tree.delete(*tree.get_children())
+        if not self.model:
+            self.save_summary.set("Open a replay first.")
+            return
+        spans = self.clip_ranges()
+        step = self.replay.interval_ms / 1000.0
+        cars = self.replay.cars
+        total = 0.0
+        for n, (a, b) in enumerate(spans, start=1):
+            inside = [o for i, o in enumerate(self.overtakes) if i in self.ticked and a <= o.frame <= b]
+            what = ",  ".join("%s > %s (%s)" % (cars[o.overtaker].driver, cars[o.passed].driver,
+                                                analysis.fmt_clock(o.time_s)) for o in inside)
+            length = (b - a + 1) * step
+            total += length
+            tree.insert("", "end", values=(n, analysis.fmt_clock(a * step), analysis.fmt_clock(b * step),
+                                           "%.0f s" % length, what))
+        if spans:
+            self.save_summary.set("%d clip(s) from %d ticked overtake(s), %s in total." % (
+                len(spans), len(self.ticked), analysis.fmt_clock(total)))
+        else:
+            self.save_summary.set("Nothing ticked yet: tick overtakes in the Overtakes tab (column 'Use').")
+
+    def _on_tab_changed(self):
+        self._fill_clip_overview()
+
+    def _on_close(self):
+        try:
+            tab = self.notebook.index("current")
+        except (tk.TclError, TypeError, ValueError):
+            tab = 0
+        save_config(geometry=self.geometry(), tab=tab if isinstance(tab, int) else 0)
+        self.destroy()
 
     # --------------------------------------------------------------- units
     def _apply_unit_headings(self):
@@ -569,6 +727,7 @@ class App(tk.Tk):
                           "(* = clip length set by hand)" % (
                               len(self.shown_overtakes), len(self.overtakes), len(self.ticked), len(spans),
                               analysis.fmt_clock(seconds)))
+        self._fill_clip_overview()
         if self.model:
             self.chart.draw()
             self._update_map()
@@ -610,9 +769,15 @@ class App(tk.Tk):
 
     def _on_overtake_select(self, _event=None):
         sel = self.ov_tree.selection()
+        if not sel:
+            self._show_clip_panel(False)
         if sel and self.model:
             index = int(sel[0])
             self._sync_sliders()
+            self._show_clip_panel(True)
+            if self.model and len(sel) == 1:
+                o = self.overtakes[index]
+                self.map.zoom_to((o.overtaker, o.passed), o.frame)
             if index != self.selected_overtake:
                 self.selected_overtake = index
                 self.set_frame(self.overtakes[index].frame)
@@ -671,6 +836,12 @@ class App(tk.Tk):
         if replay.warnings:
             text += "\nNote: " + " ".join(replay.warnings)
         self.info_var.set(text)
+        problem = line is None or roadmap is None or bool(replay.warnings)
+        self.summary_var.set("%s%s | %d cars | %s | racing line: %s | road surface: %s" % (
+            "(!) " if problem else "", replay.track, len(replay.cars),
+            analysis.fmt_clock(replay.time_s(replay.frame_count - 1)),
+            "yes" if line is not None else "no (gaps estimated)",
+            "yes" if roadmap is not None else "no (tyre dirt used)"))
         self.fill_drivers()
         self.fill_overtakes()
         self.scale.configure(to=replay.frame_count - 1)
@@ -748,6 +919,7 @@ class App(tk.Tk):
 
     def _update_map(self):
         self.map.frame = self.frame
+        self.map.units = self.units
         self.map.selected = self.selected_car()
         o = self.overtakes[self.selected_overtake] if self.selected_overtake is not None else None
         self.map.highlight = (o.overtaker, o.passed) if o else ()
