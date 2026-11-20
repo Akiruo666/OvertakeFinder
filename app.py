@@ -266,6 +266,9 @@ class App(tk.Tk):
         self.work = ttk.Panedwindow(parent, orient="vertical")
         self.work.pack(fill="both", expand=True)
         upper = ttk.Panedwindow(self.work, orient="horizontal")
+        self.upper = upper
+        self._sashes_set = False
+        self._cfg_sashes = (cfg.get("sash_h"), cfg.get("sash_v"))
 
         # list (left) with the clip sliders under it
         left = ttk.Frame(upper)
@@ -304,7 +307,7 @@ class App(tk.Tk):
         for spin in (sp1, sp2):
             spin.bind("<Return>", lambda e: self._on_map_options())
             spin.bind("<FocusOut>", lambda e: self._on_map_options())
-        self.map_canvas = tk.Canvas(map_box, background=mapview.GRASS, height=300, width=420, highlightthickness=0)
+        self.map_canvas = tk.Canvas(map_box, background=mapview.GRASS, height=200, width=200, highlightthickness=0)
         self.map_canvas.pack(fill="both", expand=True)
         self.map = mapview.MapView(self.map_canvas, COLORS)
         self._on_map_options(redraw=False)
@@ -326,6 +329,7 @@ class App(tk.Tk):
         self.chart_visible = not self.chart_visible
         if self.chart_visible:
             self.work.add(self.chart_box, weight=2)
+            self.after(80, self._place_chart_sash)
         else:
             self.work.forget(self.chart_box)
         self._label_chart_button()
@@ -411,13 +415,57 @@ class App(tk.Tk):
 
     def _on_tab_changed(self):
         self._fill_clip_overview()
+        if not self._sashes_set:
+            self.after(80, self._place_sashes)
+
+    def _place_chart_sash(self):
+        try:
+            h = self.work.winfo_height()
+            fv = self._cfg_sashes[1]
+            fv = fv if isinstance(fv, (int, float)) and 0.2 < fv < 0.9 else self.SASH_V
+            if h > 200:
+                self.work.sashpos(0, int(h * fv))
+        except (tk.TclError, AttributeError, TypeError):
+            pass
+
+    SASH_H = 0.34       # share of the width taken by the overtakes list
+    SASH_V = 0.66       # share of the height taken by list + map (the chart gets the rest)
+
+    def _place_sashes(self):
+        """Default proportions of the Overtakes tab: small list, big map, medium chart."""
+        try:
+            w, h = self.upper.winfo_width(), self.work.winfo_height()
+            if w < 300 or h < 200:          # tab not shown yet: try again a few times
+                self._sash_tries = getattr(self, "_sash_tries", 0) + 1
+                if self._sash_tries < 20 and self.notebook.index("current") == 1:
+                    self.after(250, self._place_sashes)
+                return
+            fh, fv = self._cfg_sashes
+            fh = fh if isinstance(fh, (int, float)) and 0.1 < fh < 0.9 else self.SASH_H
+            fv = fv if isinstance(fv, (int, float)) and 0.2 < fv < 0.9 else self.SASH_V
+            self.upper.sashpos(0, int(w * fh))
+            if self.chart_visible:
+                self.work.sashpos(0, int(h * fv))
+            self._sashes_set = True
+        except (tk.TclError, AttributeError, TypeError):
+            pass
 
     def _on_close(self):
         try:
             tab = self.notebook.index("current")
         except (tk.TclError, TypeError, ValueError):
             tab = 0
-        save_config(geometry=self.geometry(), tab=tab if isinstance(tab, int) else 0)
+        extra = {}
+        try:
+            if self._sashes_set:
+                w, h = self.upper.winfo_width(), self.work.winfo_height()
+                if w > 300:
+                    extra["sash_h"] = round(self.upper.sashpos(0) / w, 3)
+                if h > 200 and self.chart_visible:
+                    extra["sash_v"] = round(self.work.sashpos(0) / h, 3)
+        except (tk.TclError, AttributeError, TypeError, ZeroDivisionError):
+            pass
+        save_config(geometry=self.geometry(), tab=tab if isinstance(tab, int) else 0, **extra)
         self.destroy()
 
     # --------------------------------------------------------------- units

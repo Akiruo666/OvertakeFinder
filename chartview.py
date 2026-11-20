@@ -22,10 +22,11 @@ TIME_STEPS = (1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600)
 MIN_WINDOW = 100          # frames (3 s)
 DRIVER_RANGE_M = 150.0    # gaps beyond this are not drawn in "driver" mode
 ZOOM_AROUND_S = 60
+ROW_MIN_PX = 18           # smallest height of one car's row in Positions mode
 
 
 class ChartView:
-    MARGIN = (58, 28, 14, 44)      # left, top, right, bottom
+    MARGIN = (58, 28, 14, 58)      # left, top, right, bottom
 
     def __init__(self, parent, app, colors):
         self.app = app
@@ -42,8 +43,15 @@ class ChartView:
         ttk.Button(bar, text="Reset zoom", command=self.reset_zoom).pack(side="right")
         ttk.Button(bar, text="Zoom %d s around cursor" % (2 * ZOOM_AROUND_S),
                    command=self.zoom_to_cursor).pack(side="right", padx=6)
-        self.canvas = tk.Canvas(parent, background="white", height=240, highlightthickness=0)
-        self.canvas.pack(fill="both", expand=True)
+        self.row0 = 0.0                   # first visible rank (Positions mode, many cars)
+        self._revealed = None
+        body = ttk.Frame(parent)
+        body.pack(fill="both", expand=True)
+        self.vscroll = ttk.Scrollbar(body, orient="vertical", command=self._on_vscroll)
+        self._vscroll_shown = False
+        self.canvas = tk.Canvas(body, background="white", height=240, highlightthickness=0)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self._body = body
         self.scroll = ttk.Scrollbar(parent, orient="horizontal", command=self._on_scrollbar)
         self.scroll.pack(fill="x")
         c = self.canvas
@@ -53,6 +61,7 @@ class ChartView:
         c.bind("<Motion>", self._on_motion)
         c.bind("<Leave>", lambda e: c.delete("hover"))
         c.bind("<MouseWheel>", lambda e: self._wheel(e, 1 if e.delta > 0 else -1))
+        c.bind("<Shift-MouseWheel>", lambda e: self._rows_scroll(-1 if e.delta > 0 else 1))
         c.bind("<Button-4>", lambda e: self._wheel(e, 1))
         c.bind("<Button-5>", lambda e: self._wheel(e, -1))
 
@@ -103,6 +112,44 @@ class ChartView:
             step = float(args[0]) * (span * (0.9 if args[1] == "pages" else 0.1))
             self._set_view(self.v0 + step, self.v1 + step)
 
+    def _rows(self):
+        """(total rows, rows visible) in Positions mode."""
+        n = max(1, len(self.model.active)) if self.model else 1
+        _, y0, _, y1 = self._plot()
+        return n, max(1, min(n, int((y1 - y0) / ROW_MIN_PX)))
+
+    def _set_row0(self, value):
+        n, vis = self._rows()
+        self.row0 = min(max(0.0, value), float(n - vis))
+        self.draw()
+
+    def _rows_scroll(self, steps):
+        if self.model and self.mode_var.get() == POSITIONS:
+            self._set_row0(self.row0 + steps * 2)
+
+    def _on_vscroll(self, action, *args):
+        if not self.model:
+            return
+        n, vis = self._rows()
+        if action == "moveto":
+            self._set_row0(float(args[0]) * n)
+        elif action == "scroll":
+            self._set_row0(self.row0 + float(args[0]) * (vis * 0.9 if args[1] == "pages" else 1))
+
+    def _update_vscroll(self):
+        need = bool(self.model) and self.mode_var.get() == POSITIONS and self._rows()[1] < self._rows()[0]
+        if need and not self._vscroll_shown:
+            self.vscroll.pack(side="right", fill="y")
+            self._vscroll_shown = True
+        elif not need and self._vscroll_shown:
+            self.vscroll.pack_forget()
+            self._vscroll_shown = False
+            self.row0 = 0.0
+        if need:
+            n, vis = self._rows()
+            self.row0 = min(max(0.0, self.row0), float(n - vis))
+            self.vscroll.set(self.row0 / n, (self.row0 + vis) / n)
+
     def _plot(self):
         w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
         l, t, r, b = self.MARGIN
@@ -142,11 +189,13 @@ class ChartView:
         scale = analysis.short_length(1.0, units)
         unit = analysis.UNIT_NAMES[units][0]
         if mode == POSITIONS:
-            n = max(1, len(m.active))
-            row = (y1 - y0) / n
-            step = 1 if n <= 12 else 5
-            grid = [(y0 + (r - 0.5) * row, "P%d" % r) for r in range(1, n + 1) if r == 1 or r % step == 0]
-            return (lambda v: y0 + (v - 0.5) * row), grid
+            n, vis = self._rows()
+            row = (y1 - y0) / vis
+            r0 = self.row0
+            step = 1 if vis <= 12 else 5
+            grid = [(y0 + (r - r0 - 0.5) * row, "P%d" % r) for r in range(1, n + 1)
+                    if r0 < r <= r0 + vis + 0.01 and (r % step == 0 or step == 1 or r == int(r0) + 1)]
+            return (lambda v: y0 + (v - r0 - 0.5) * row), grid
         if mode == LEADER:
             top = 1.0
             for f in range(int(f0), int(f1) + 1, max(1, int(f1 - f0) // 400)):
@@ -172,6 +221,7 @@ class ChartView:
         if not m:
             c.create_text(20, 20, anchor="nw", text="Open a replay to see the race chart.")
             return
+        self._update_vscroll()
         x0, y0, x1, y1 = self._plot()
         if x1 - x0 < 60 or y1 - y0 < 40:
             return
@@ -181,16 +231,22 @@ class ChartView:
         y_of, grid = self._setup_axis(mode, y0, y1, self.v0, self.v1)
         self._y_of = y_of
         for y, label in grid:
-            c.create_line(x0, y, x1, y, fill="#ececec")
-            c.create_text(x0 - 6, y, anchor="e", text=label, fill="#555555", font=("TkDefaultFont", 8))
-        self._draw_time_axis(x0, y1, x1)
+            if y0 - 1 <= y <= y1 + 1:
+                c.create_line(x0, y, x1, y, fill="#ececec")
+                c.create_text(x0 - 6, y, anchor="e", text=label, fill="#555555", font=("TkDefaultFont", 8))
         ref = self.app.selected_car()
         if mode == DRIVER and ref is None:
             c.create_text((x0 + x1) / 2, (y0 + y1) / 2, text="Choose a driver in the overtakes list "
                           "to see the gaps to him.", fill="#777777")
         else:
-            self._draw_lines(mode, ref, y_of, x0, x1, y0, y1)
-            self._draw_markers(mode, ref, y_of)
+            shown = self._draw_lines(mode, ref, y_of, x0, x1, y0, y1)
+            self._draw_markers(mode, ref, y_of, y0, y1)
+            # hide what ran outside the plot (scrolled rows), then redraw legend and axis
+            w, h = c.winfo_width(), c.winfo_height()
+            c.create_rectangle(0, 0, w, y0, fill="white", outline="")
+            c.create_rectangle(0, y1, w, h, fill="white", outline="")
+            self._draw_legend(shown, x0)
+            self._draw_time_axis(x0, y1, x1)
         self._draw_clips(x0, x1, y1)
         self.draw_cursor()
 
@@ -231,7 +287,10 @@ class ChartView:
             c.create_line(x0, y, x1, y, fill="#333333", dash=(3, 3))
             c.create_text(x1, y - 8, anchor="e", fill="#333333", font=("TkDefaultFont", 8),
                           text=m.replay.cars[ref].driver)
-        names = [i for i, _ in shown]
+        return [i for i, _ in shown]
+
+    def _draw_legend(self, names, x0):
+        c, m = self.canvas, self.model
         if len(names) <= 12:
             lx = x0
             for i in names:
@@ -245,7 +304,7 @@ class ChartView:
             c.create_text(x0, 13, anchor="w", font=("TkDefaultFont", 8), fill="#555555",
                           text="%d cars: point at a line to see who it is" % len(names))
 
-    def _draw_markers(self, mode, ref, y_of):
+    def _draw_markers(self, mode, ref, y_of, y0, y1):
         if mode == LEADER:
             return
         c, app, m = self.canvas, self.app, self.model
@@ -261,6 +320,8 @@ class ChartView:
                 if ref not in (o.overtaker, o.passed):
                     continue
                 y = y_of(0.0)
+            if not (y0 <= y <= y1):
+                continue
             x = self._x(o.frame)
             ticked = idx in app.ticked
             flagged = bool(o.flags)
@@ -299,6 +360,14 @@ class ChartView:
                 continue
             c.create_rectangle(max(x0, self._x(a)), y1 + 24, min(x1, self._x(b)), y1 + 34,
                                fill="#66bb6a", outline="#2e7d32")
+        sel = app.selected_overtake
+        if sel is not None and 0 <= sel < len(app.overtakes):
+            c.create_text(x0 - 6, y1 + 45, anchor="e", text="selected", fill="#1565c0", font=("TkDefaultFont", 8))
+            for a, b in clips.clip_ranges(m, app.overtakes, {sel}, app.clip_span):
+                if b < self.v0 or a > self.v1:
+                    continue
+                c.create_rectangle(max(x0, self._x(a)), y1 + 40, min(x1, self._x(b)), y1 + 50,
+                                   fill="#64b5f6", outline="#1565c0")
 
     def follow(self):
         """Move a zoomed view along when the shown frame leaves it (slider, buttons)."""
@@ -307,6 +376,27 @@ class ChartView:
         span = self.v1 - self.v0
         if m and not (self.v0 <= f <= self.v1) and span < m.frames - 1:
             self._set_view(f - span / 2, f + span / 2)
+        self._reveal_selected()
+
+    def _reveal_selected(self):
+        """Scroll the Positions rows so the selected overtake's cars are visible."""
+        m, app = self.model, self.app
+        sel = app.selected_overtake
+        if not m or sel is None or sel == self._revealed or self.mode_var.get() != POSITIONS:
+            return
+        self._revealed = sel
+        n, vis = self._rows()
+        if vis >= n:
+            return
+        o = app.overtakes[sel]
+        frames, ranks = m.rank_series()
+        stride = frames[1] - frames[0] if len(frames) > 1 else 1
+        k = min(len(frames) - 1, o.frame // stride)
+        rows = [ranks[o.overtaker][k], ranks[o.passed][k]]
+        lo, hi = min(rows), max(rows)
+        if lo - 1 < self.row0 or hi > self.row0 + vis:
+            self.row0 = min(max(0.0, (lo + hi) / 2 - vis / 2 - 0.5), float(n - vis))
+            self.draw()
 
     def draw_cursor(self):
         c, m = self.canvas, self.model

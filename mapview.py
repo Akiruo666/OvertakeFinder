@@ -187,6 +187,9 @@ class MapView:
             return
         model, replay = self.model, self.model.replay
         f = max(0, min(self.frame, model.frames - 1))
+        if self._recentre(f):                  # view jumped: the track layer must follow
+            self.redraw()
+            return
         many = len(model.active) > 12
         focus = set(self.highlight) | ({self.selected} if self.selected is not None else set())
         dim = bool(self.highlight)
@@ -226,6 +229,37 @@ class MapView:
         t = model.time_s(f)
         c.create_text(8, 6, anchor="nw", fill="#444444", font=("TkDefaultFont", 9),
                       text="Replay time %s" % _clock(t), tags="cars")
+
+    def _recentre(self, f):
+        """Zoomed in and the focus cars left the picture: move the view onto them.
+
+        Jumps by a whole screen (centred on the cars) rather than creeping, so there is
+        always some track to see. Returns True when the view changed."""
+        if not self.user_moved or not self.view:
+            return False
+        focus = list(self.highlight) or ([self.selected] if self.selected is not None else [])
+        pts = []
+        for i in focus:
+            p = self.model.replay.cars[i].positions[f]
+            if p != (0.0, 0.0, 0.0):
+                pts.append((p[0], p[2]))
+        if not pts:
+            return False
+        w, h = self._size()
+        pad = 30
+        def inside(x, z):
+            px, py = self._to_screen(x, z)
+            return pad <= px <= w - pad and pad <= py <= h - pad
+        if any(inside(x, z) for x, z in pts):
+            return False
+        cx = sum(p[0] for p in pts) / len(pts)
+        cz = sum(p[1] for p in pts) / len(pts)
+        s = self.view[2]
+        # both cars on screen after centring? otherwise centre on the first (overtaker)
+        if not all(abs(x - cx) * s < w / 2 - pad and abs(z - cz) * s < h / 2 - pad for x, z in pts):
+            cx, cz = pts[0]
+        self.view = (cx, cz, s)
+        return True
 
     def _draw_ahead(self, car, f, ahead_n, step_s, col, labels=True):
         """Dashed line along where the car goes next, with a dot every second."""
