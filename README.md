@@ -88,8 +88,10 @@ The in-game part is the CSP Lua app in `lua_app\OvertakeFocus`:
 
 1. Copy the folder `OvertakeFocus` to `<Assetto Corsa folder>\apps\lua\OvertakeFocus`.
 2. Start the game, open the replay saved by this program, and switch on **Overtake Focus** in the apps list. Its window shows the plan, the replay time, the followed car, and which replay fields this CSP version offers.
-3. The game does not tell apps which replay file is playing, so the app recognises it: every plan holds where each car is at every second of its replay. While a replay plays, the app compares all plans in the replay folder (`*.focus.json`, also when Content Manager renamed them to `*.focus.json.acreplay`) with where the cars are, and uses the one that matches (80 % of the cars within 8 m). This also tells apart several exports from the same race. Every 2 s it checks that the plan still fits, so loading another replay switches plans.
-4. **Open plan...** opens a file dialog to pick a plan by hand (it stays until the next replay starts; the window warns when the cars do not match it). **Search again** repeats the search. *Details* shows each plan's match.
+3. When a replay plays, the app finds its plan in two ways:
+   - **By name**: the game writes the replay's file name in `Documents\Assetto Corsa\cfg\race.ini` (`[REPLAY] FILENAME=...`). The app looks in the replay folder for `<name>.focus.json`, also under the name Content Manager may give it (`<name>.focus.json.acreplay`). When another replay is loaded, it looks again.
+   - **By car positions**, when no plan has the replay's name (e.g. you renamed the replay): every plan holds where each car is at every second of its replay; the app compares all plans in the replay folder with where the cars are and uses the one that matches (80 % of the cars within 8 m). This also tells apart several exports from the same race.
+4. **Open plan...** opens a file dialog to pick a plan by hand (it stays until the next replay starts). The window warns when the cars are not where the plan has them. **Search again** repeats the search. *Details* shows each plan's match.
 5. While the replay plays the app switches the followed car by itself. *Follow the plan* turns it off.
 
 Plans saved before this version have no positions: open them with *Open plan...*, or save the replay again.
