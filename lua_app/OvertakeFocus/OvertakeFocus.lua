@@ -117,13 +117,34 @@ local function usePlan(path, data, manual)
     tonumber(data.duration_s) or 0)
 end
 
-local function planFiles()
+-- Folder that holds the replay named in race.ini: FILENAME can be a bare name, a
+-- path relative to the replay folder (e.g. "temp\\name.acreplay") or a full path.
+local function replayFolder(name)
+  local dir = name and name:match('^(.*)[/\\][^/\\]+$')
+  if not dir or dir == '' then return REPLAY_DIR end
+  if dir:match('^%a:') or dir:match('^[/\\][/\\]') then return dir end   -- full path
+  return REPLAY_DIR .. '/' .. dir
+end
+
+-- Folders to look in: the folder of the replay first, then the replay folder and its temp.
+local function searchFolders(name)
+  local out, seen = {}, {}
+  for _, dir in ipairs({ replayFolder(name), REPLAY_DIR, REPLAY_DIR .. '/temp' }) do
+    local key = dir:lower():gsub('\\', '/')
+    if not seen[key] then seen[key] = true; out[#out + 1] = dir end
+  end
+  return out
+end
+
+local function planFiles(name)
   local out = {}
-  local ok, list = pcall(io.scanDir, REPLAY_DIR, '*.json*')
-  if ok and type(list) == 'table' then
-    for _, name in ipairs(list) do
-      if name:match('%.json$') or name:match('%.json%.acreplay$') then
-        out[#out + 1] = REPLAY_DIR .. '/' .. name
+  for _, dir in ipairs(searchFolders(name)) do
+    local ok, list = pcall(io.scanDir, dir, '*.json*')
+    if ok and type(list) == 'table' then
+      for _, file in ipairs(list) do
+        if file:match('%.json$') or file:match('%.json%.acreplay$') then
+          out[#out + 1] = dir .. '/' .. file
+        end
       end
     end
   end
@@ -148,8 +169,10 @@ end
 local function namedCandidates(name)
   local stem = fileName(name):gsub('%.acreplay$', '')
   local out = {}
-  for _, suffix in ipairs({ '.focus.json', '.focus.json.acreplay', '.json', '.json.acreplay' }) do
-    out[#out + 1] = REPLAY_DIR .. '/' .. stem .. suffix
+  for _, dir in ipairs(searchFolders(name)) do
+    for _, suffix in ipairs({ '.focus.json', '.focus.json.acreplay', '.json', '.json.acreplay' }) do
+      out[#out + 1] = dir .. '/' .. stem .. suffix
+    end
   end
   return out
 end
@@ -175,7 +198,7 @@ local function searchPlan()
   end
   lastScan = {}
   local best, bestPath, bestScore = nil, nil, 0
-  for _, path in ipairs(planFiles()) do
+  for _, path in ipairs(planFiles(replayName)) do
     local data = loadCached(path)
     if data then
       local s = score(data, t)
@@ -289,7 +312,11 @@ function script.windowMain(dt)
     end
   end
   ui.treeNode('Details', function ()
-    ui.text('Replay folder: ' .. REPLAY_DIR)
+    ui.text('Folders searched:')
+    for _, dir in ipairs(searchFolders(replayName)) do ui.text('  ' .. dir) end
+    if replayName then
+      ui.text('Plan names tried: ' .. fileName(replayName):gsub('%.acreplay$', '') .. '.focus.json (.acreplay), .json (.acreplay)')
+    end
     ui.text('Plans compared (share of cars where the plan has them):')
     if #lastScan == 0 then ui.text('  (none)') end
     for _, row in ipairs(lastScan) do
