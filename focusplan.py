@@ -17,8 +17,6 @@ FOCUS_CHOICES = ((FOCUS_OVERTAKER, "Car that overtakes"),
                  (FOCUS_PASSED, "Car that is passed"),
                  (FOCUS_NONE, "Do not write a focus plan"))
 
-ACTIVE_NAME = "active.json"
-
 
 def new_time(ranges, frame, interval_s):
     """Time in the new replay of an original frame that lies inside `ranges`."""
@@ -89,21 +87,11 @@ def documents_ac_folder():
     return None
 
 
-def save(doc, replay_path, ac_folder=None):
-    """Write the sidecar next to the replay and, when the game's Documents folder
-    is known, the file the Lua app reads. Returns (sidecar_path, active_path or None)."""
+def save(doc, replay_path):
+    """Write the plan next to the new replay as <name>.focus.json; the Overtake Focus app
+    in the game finds it by the replay's name. Returns the path written."""
     text = json.dumps(doc, indent=1, ensure_ascii=False)
     sidecar = os.path.splitext(replay_path)[0] + ".focus.json"
     with open(sidecar, "w", encoding="utf-8") as fh:
         fh.write(text)
-    active = None
-    if ac_folder:
-        try:
-            folder = os.path.join(ac_folder, "overtake_focus")
-            os.makedirs(folder, exist_ok=True)
-            active = os.path.join(folder, ACTIVE_NAME)
-            with open(active, "w", encoding="utf-8") as fh:
-                fh.write(text)
-        except OSError:
-            active = None
-    return sidecar, active
+    return sidecar

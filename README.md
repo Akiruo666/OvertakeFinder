@@ -82,13 +82,16 @@ Per overtake you can change this: select one or more rows in the list and use th
 
 ## Camera follows the overtaking car (needs the in-game app)
 
-A replay file does not store which car the camera follows; the game decides that while playing (it starts on the car of the person who recorded the replay). So *Save new replay...* can also write a **camera plan**: with *Camera follows* set to *Car that overtakes* (or *Car that is passed*), a small JSON file `<name>.focus.json` is written next to the new replay, and a copy to `Documents\Assetto Corsa\overtake_focus\active.json`. At the start of each clip the plan switches to the car of that overtake; when a clip holds several overtakes it switches halfway between them.
+A replay file does not store which car the camera follows; the game decides that while playing (it starts on the car of the person who recorded the replay). So *Save new replay...* can also write a **camera plan**: with *Camera follows* set to *Car that overtakes* (or *Car that is passed*), a small JSON file `<name>.focus.json` is written next to the new replay (keep them together). At the start of each clip the plan switches to the car of that overtake; when a clip holds several overtakes it switches halfway between them.
 
 The in-game part is the CSP Lua app in `lua_app\OvertakeFocus`:
 
 1. Copy the folder `OvertakeFocus` to `<Assetto Corsa folder>\apps\lua\OvertakeFocus`.
 2. Start the game, open the replay saved by this program, and switch on **Overtake Focus** in the apps list. Its window shows the plan, the replay time, the followed car, and which replay fields this CSP version offers.
-3. While the replay plays the app switches the followed car by itself. *Follow the plan* turns it off; *Reload plan* reads the file again (the plan of the last saved replay is used).
+3. When a replay starts, the app reads its name from `Documents\Assetto Corsa\cfg\race.ini` and looks in the replay folder for `<name>.focus.json`, also under the names Content Manager may give it (`<name>.focus.json.acreplay`, `<name>.json`). Found: it is used. Not found, or you want another one: **Open plan...** opens a file dialog; a plan chosen by hand stays until the next replay starts. **Search again** repeats the automatic search. *Details* lists the files it looked for.
+4. While the replay plays the app switches the followed car by itself. *Follow the plan* turns it off. When the replay's length does not match the plan, the window says so.
+
+Content Manager renames every file in the replay folder that does not end in `.acreplay`, so the plan may show up in its replay list as `<name>.focus.json` with a `.acreplay` extension. It is not a replay; leave it there, the app finds it.
 
 This app was written without being able to run the game (tested only for the plan file). If the window shows "NO" or "not found" for a field, or the followed car does not change, send a screenshot of the app window.
 

@@ -684,16 +684,12 @@ class App(tk.Tk):
         switches = focusplan.build(self.model, self.overtakes, self.ticked, spans, focus)
         doc = focusplan.document(self.model, target, switches, seconds, focus)
         try:
-            sidecar, active = focusplan.save(doc, target, focusplan.documents_ac_folder())
+            sidecar = focusplan.save(doc, target)
         except OSError as exc:
             return "The camera plan could not be written: %s" % exc
-        text = "Camera plan (%d switches): %s" % (len(switches), sidecar)
-        if active:
-            text += "\nThe Overtake Focus app in the game reads: %s" % active
-        else:
-            text += ("\nThe Documents\\Assetto Corsa folder was not found: copy this file to "
-                     "Documents\\Assetto Corsa\\overtake_focus\\active.json")
-        return text
+        return ("Camera plan (%d switches): %s\nKeep it next to the replay: the Overtake Focus app in "
+                "the game finds it by the replay's name (also when Content Manager renamed it to "
+                "...focus.json.acreplay). Otherwise use 'Open plan...' in the app." % (len(switches), sidecar))
 
     def save_replay(self):
         if not self.model:
