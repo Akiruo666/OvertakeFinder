@@ -60,10 +60,51 @@ def build(model, overtakes, ticked, ranges, target=FOCUS_OVERTAKER):
     return out
 
 
-def document(model, replay_file, switches, duration_s, target):
-    return {"version": 1, "replay": os.path.basename(replay_file), "focus": target,
-            "duration_s": round(duration_s, 3), "interval_ms": model.replay.interval_ms,
-            "cars": [c.driver for c in model.replay.cars], "switches": switches}
+SAMPLE_STEP_S = 1.0
+
+
+def original_frame(ranges, t, interval_s):
+    """Frame of the original replay shown at time `t` of the new replay (or None)."""
+    want = int(round(t / interval_s))
+    done = 0
+    for a, b in sorted(ranges):
+        n = b - a + 1
+        if want < done + n:
+            return a + want - done
+        done += n
+    return None
+
+
+def samples(model, ranges, duration_s, step_s=SAMPLE_STEP_S):
+    """Where every car is (x, z in metres, 0.1 m) at every `step_s` of the new replay.
+
+    The in-game app compares these with the cars it sees to recognise which replay is
+    playing, since the game does not tell the app the replay's file name."""
+    interval_s = model.replay.interval_ms / 1000.0
+    out = []
+    k = 0
+    while k * step_s <= duration_s + 1e-6:
+        f = original_frame(ranges, k * step_s, interval_s)
+        row = []
+        for car in model.replay.cars:
+            p = car.positions[f] if (f is not None and car.has_positions and f < len(car.positions)) else None
+            if p is None or p == (0.0, 0.0, 0.0):
+                row.append(None)
+            else:
+                row.append([round(p[0], 1), round(p[2], 1)])
+        out.append(row)
+        k += 1
+    return out
+
+
+def document(model, replay_file, switches, duration_s, target, ranges=None):
+    doc = {"version": 2, "replay": os.path.basename(replay_file), "focus": target,
+           "duration_s": round(duration_s, 3), "interval_ms": model.replay.interval_ms,
+           "cars": [c.driver for c in model.replay.cars], "switches": switches}
+    if ranges:
+        doc["sample_step_s"] = SAMPLE_STEP_S
+        doc["samples"] = samples(model, ranges, duration_s)
+    return doc
 
 
 def documents_ac_folder():
@@ -90,7 +131,7 @@ def documents_ac_folder():
 def save(doc, replay_path):
     """Write the plan next to the new replay as <name>.focus.json; the Overtake Focus app
     in the game finds it by the replay's name. Returns the path written."""
-    text = json.dumps(doc, indent=1, ensure_ascii=False)
+    text = json.dumps(doc, ensure_ascii=False, separators=(",", ":"))
     sidecar = os.path.splitext(replay_path)[0] + ".focus.json"
     with open(sidecar, "w", encoding="utf-8") as fh:
         fh.write(text)

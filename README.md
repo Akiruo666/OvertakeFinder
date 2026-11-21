@@ -88,8 +88,11 @@ The in-game part is the CSP Lua app in `lua_app\OvertakeFocus`:
 
 1. Copy the folder `OvertakeFocus` to `<Assetto Corsa folder>\apps\lua\OvertakeFocus`.
 2. Start the game, open the replay saved by this program, and switch on **Overtake Focus** in the apps list. Its window shows the plan, the replay time, the followed car, and which replay fields this CSP version offers.
-3. When a replay starts, the app reads its name from `Documents\Assetto Corsa\cfg\race.ini` and looks in the replay folder for `<name>.focus.json`, also under the names Content Manager may give it (`<name>.focus.json.acreplay`, `<name>.json`). Found: it is used. Not found, or you want another one: **Open plan...** opens a file dialog; a plan chosen by hand stays until the next replay starts. **Search again** repeats the automatic search. *Details* lists the files it looked for.
-4. While the replay plays the app switches the followed car by itself. *Follow the plan* turns it off. When the replay's length does not match the plan, the window says so.
+3. The game does not tell apps which replay file is playing, so the app recognises it: every plan holds where each car is at every second of its replay. While a replay plays, the app compares all plans in the replay folder (`*.focus.json`, also when Content Manager renamed them to `*.focus.json.acreplay`) with where the cars are, and uses the one that matches (80 % of the cars within 8 m). This also tells apart several exports from the same race. Every 2 s it checks that the plan still fits, so loading another replay switches plans.
+4. **Open plan...** opens a file dialog to pick a plan by hand (it stays until the next replay starts; the window warns when the cars do not match it). **Search again** repeats the search. *Details* shows each plan's match.
+5. While the replay plays the app switches the followed car by itself. *Follow the plan* turns it off.
+
+Plans saved before this version have no positions: open them with *Open plan...*, or save the replay again.
 
 Content Manager renames every file in the replay folder that does not end in `.acreplay`, so the plan may show up in its replay list as `<name>.focus.json` with a `.acreplay` extension. It is not a replay; leave it there, the app finds it.
 

@@ -682,7 +682,7 @@ class App(tk.Tk):
 
     def _write_focus_plan(self, target, spans, seconds, focus):
         switches = focusplan.build(self.model, self.overtakes, self.ticked, spans, focus)
-        doc = focusplan.document(self.model, target, switches, seconds, focus)
+        doc = focusplan.document(self.model, target, switches, seconds, focus, spans)
         try:
             sidecar = focusplan.save(doc, target)
         except OSError as exc:
