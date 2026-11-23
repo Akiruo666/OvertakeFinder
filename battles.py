@@ -132,6 +132,7 @@ class Battle:
     off_track: list = field(default_factory=list)  # car indexes that went off
     score: float = 0.0
     flags: list = field(default_factory=list)
+    trains: list = field(default_factory=list)    # (other car indexes, first frame, last frame) of trains it was in
     parent: int = None            # index of the group this duel belongs to (in Result.battles)
     duels: list = field(default_factory=list)     # group: indexes of its duels (in Result.battles)
 
@@ -628,19 +629,24 @@ def _components(pairs):
 
 
 def _train_notes(duels, groups, replay, st):
-    """Duels that are not part of a group but share a car with one for a while."""
-    fc = analysis.fmt_clock
+    """Duels that are not part of a group but share a car with one for a while:
+    `trains` gets every such stretch, the note names every other driver once."""
     for x in duels:
-        for y in groups:
+        names = []
+        for y in sorted(groups, key=lambda g: g.start):
             if not set(x.cars) & set(y.cars):
                 continue
             lo, hi = max(x.start, y.start), min(x.end, y.end)
             if replay.time_s(hi) - replay.time_s(lo) < st.min_close_s:
                 continue
-            others = [replay.cars[i].driver for i in y.cars if i not in x.cars]
-            if others:
-                x.flags.append("train with %s %s-%s" % (", ".join(others), fc(replay.time_s(lo)),
-                                                        fc(replay.time_s(hi))))
+            others = [i for i in y.cars if i not in x.cars]
+            if not others:
+                continue
+            x.trains.append((others, lo, hi))
+            names += [replay.cars[i].driver for i in others if replay.cars[i].driver not in names]
+        if names:
+            shown = ", ".join(names[:3]) + (" +%d" % (len(names) - 3) if len(names) > 3 else "")
+            x.flags.append("train with " + shown)
 
 
 @dataclass

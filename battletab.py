@@ -28,6 +28,17 @@ SETTING_FIELDS = (
 SORTS = (("score", "Score"), ("time", "Time"), ("length", "Length"), ("close", "Close time"))
 TICK_ON, TICK_OFF = "☑", "☐"
 ALL_DRIVERS = "All drivers"
+BATTLE_TRAIL_S = 4        # defaults of the Battles map (the Overtakes map has its own)
+BATTLE_AHEAD_S = 2
+GAP_ALL, GAP_SELECTED, GAP_OFF = "all", "selected", "off"
+GAP_MODES = ((GAP_ALL, "All cars"), (GAP_SELECTED, "Selected battle / duel only"), (GAP_OFF, "Off"))
+
+
+def _seconds(value, fallback):
+    try:
+        return max(0, min(20, int(round(float(value)))))
+    except (TypeError, ValueError):
+        return fallback
 
 
 def settings_from(saved):
@@ -160,7 +171,11 @@ class BattlesTab:
         ttk.Button(self.bclip_panel, text="Reset to default", command=self.reset_selected_battle_clips).pack(
             side="left", padx=10)
         self.battle_detail = tk.StringVar(value="Select a battle to see its details.")
-        ttk.Label(detail, textvariable=self.battle_detail, justify="left", wraplength=620).pack(anchor="w", pady=(4, 0))
+        self.bdetail_btn = ttk.Button(detail, text="", width=12, command=self.toggle_battle_detail)
+        self.bdetail_btn.pack(anchor="w", pady=(4, 0))
+        self.bdetail_label = ttk.Label(detail, textvariable=self.battle_detail, justify="left", wraplength=620)
+        self.bdetail_open = False          # closed every time the program starts
+        self._apply_battle_detail()
 
         cols = ("tick", "time", "length", "cars", "laps", "close", "gap", "side", "leads", "score",
                 "before", "after", "notes")
@@ -187,14 +202,27 @@ class BattlesTab:
                                  padding=4)
         mbar = ttk.Frame(map_box)
         mbar.pack(fill="x")
-        ttk.Checkbutton(mbar, text="Gap colours (yellow / orange / red between cars that are close)",
-                        variable=self.gap_lines_var, command=self._on_map_options).pack(side="left")
+        self.btrail_var = tk.StringVar(value=str(_seconds(cfg.get("battle_map_trail_s"), BATTLE_TRAIL_S)))
+        self.bahead_var = tk.StringVar(value=str(_seconds(cfg.get("battle_map_ahead_s"), BATTLE_AHEAD_S)))
+        ttk.Label(mbar, text="Trail behind").pack(side="left")
+        for var, text in ((self.btrail_var, "s   Look ahead"), (self.bahead_var, "s")):
+            spin = ttk.Spinbox(mbar, from_=0, to=20, width=3, textvariable=var, command=self._on_battle_map_options)
+            spin.pack(side="left", padx=4)
+            spin.bind("<Return>", lambda e: self._on_battle_map_options())
+            spin.bind("<FocusOut>", lambda e: self._on_battle_map_options())
+            ttk.Label(mbar, text=text).pack(side="left")
+        ttk.Label(mbar, text="Gap colours:").pack(side="left", padx=(14, 4))
+        saved_gap = cfg.get("battle_map_gaps")
+        self.bgap_var = tk.StringVar(value=dict(GAP_MODES).get(saved_gap, GAP_MODES[0][1]))
+        gbox = ttk.Combobox(mbar, textvariable=self.bgap_var, state="readonly", width=24,
+                            values=[label for _k, label in GAP_MODES])
+        gbox.pack(side="left")
+        gbox.bind("<<ComboboxSelected>>", lambda e: self._on_battle_map_options())
         self.bmap_canvas = tk.Canvas(map_box, background=mapview.GRASS, height=200, width=200, highlightthickness=0)
         self.bmap_canvas.pack(fill="both", expand=True)
         self.battle_map = mapview.MapView(self.bmap_canvas, self.colors_list)
-        self.battle_map.trail_s, self.battle_map.ahead_s = self.map.trail_s, self.map.ahead_s
         self.battle_map.initials = self.map.initials
-        self.battle_map.gap_lines = self.map.gap_lines
+        self._on_battle_map_options(redraw=False)
         self.bupper.add(map_box, weight=4)
         self.bwork.add(self.bupper, weight=4)
 
@@ -202,6 +230,32 @@ class BattlesTab:
                                    padding=4)
         self.battle_chart = battlechart.BattleChart(chart_box, self)
         self.bwork.add(chart_box, weight=2)
+
+    def _apply_battle_detail(self):
+        self.bdetail_btn.configure(text=("v Details" if self.bdetail_open else "> Details"))
+        if self.bdetail_open:
+            self.bdetail_label.pack(anchor="w", pady=(2, 0))
+        else:
+            self.bdetail_label.pack_forget()
+
+    def toggle_battle_detail(self):
+        self.bdetail_open = not self.bdetail_open
+        self._apply_battle_detail()
+
+    def _gap_mode(self):
+        return next((k for k, label in GAP_MODES if label == self.bgap_var.get()), GAP_ALL)
+
+    def _on_battle_map_options(self, redraw=True):
+        m = self.battle_map
+        m.trail_s = _seconds(self.btrail_var.get(), BATTLE_TRAIL_S)
+        m.ahead_s = _seconds(self.bahead_var.get(), BATTLE_AHEAD_S)
+        self.btrail_var.set(str(m.trail_s))
+        self.bahead_var.set(str(m.ahead_s))
+        mode = self._gap_mode()
+        m.gap_lines = m.gap_label = mode != GAP_OFF
+        self._save_config(battle_map_trail_s=m.trail_s, battle_map_ahead_s=m.ahead_s, battle_map_gaps=mode)
+        if redraw and self.model:
+            self.update_battle_map()
 
     def _battle_slider(self, parent, title, which):
         """[-] slider [+] and the value, for the clip length before/after."""
@@ -680,6 +734,8 @@ class BattlesTab:
                 "-" if b.best_frame is None else fc(t(b.best_frame)), len(b.red_frames)))
         if b.flags:
             lines.append("Notes: " + ", ".join(b.flags))
+        for others, lo, hi in b.trains:
+            lines.append("In a train %s - %s with %s" % (fc(t(lo)), fc(t(hi)), ", ".join(map(name, others))))
         if j is not None:
             p = b.phases[j]
             lines.append("Phase: %s %s - %s." % (p.kind, fc(t(p.start)), fc(t(p.end))))
@@ -717,5 +773,7 @@ class BattlesTab:
             if pick != ALL_DRIVERS else None
         b = self.selected_battle_obj()
         m.highlight = tuple(b.cars) if (b is not None and b.kind != "start") else ()
+        # "selected battle only": no lines at all while no battle is selected
+        m.gap_cars = set(m.highlight) if self._gap_mode() == GAP_SELECTED else None
         m.draw_cars()
         self.battle_chart.follow()

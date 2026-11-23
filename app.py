@@ -382,9 +382,7 @@ class App(tk.Tk, battletab.BattlesTab):
         self.map.initials = bool(self.initials_var.get())
         self.map.gap_lines = bool(self.gap_lines_var.get())
         if hasattr(self, "battle_map"):
-            self.battle_map.trail_s, self.battle_map.ahead_s = self.map.trail_s, self.map.ahead_s
             self.battle_map.initials = self.map.initials
-            self.battle_map.gap_lines = self.map.gap_lines
         if redraw and self.model and self.selected_overtake is not None:     # show the new zoom at once
             o = self.overtakes[self.selected_overtake]
             self.map.zoom_to((o.overtaker, o.passed), o.frame, level=self._zoom_level())
