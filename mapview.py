@@ -12,6 +12,7 @@ Track shape, best source first:
 import math
 
 import analysis
+import battles
 import surface
 
 ASPHALT = "#6b6b6b"
@@ -175,6 +176,9 @@ class MapView:
     frame = 0
     selected = None       # car index of the driver chosen in the filter
     highlight = ()        # car indexes of the selected overtake (overtaker, passed)
+    gaps = None           # battles.PairGaps: time gaps, for the coloured lines
+    gap_lines = True      # draw a coloured line between cars that are close
+    close_s = battles.YELLOW_S
 
     def _draw_track(self):
         kind, data = self.shape
@@ -221,6 +225,7 @@ class MapView:
             p = replay.cars[i].positions[f]
             if p != (0.0, 0.0, 0.0):
                 screen[i] = self._to_screen(p[0], p[2])
+        self._draw_close_lines(f, screen)
         self._draw_gap_line(f, screen)
         for i in order:
             car = replay.cars[i]
@@ -349,6 +354,21 @@ class MapView:
         self.user_moved = True
         self.redraw()
 
+    def _draw_close_lines(self, f, screen):
+        """A line from every car to the nearest car in front of it when the time gap is
+        at most close_s: yellow, orange (< 0.5 s), red (< 0.2 s or side by side)."""
+        if not self.gap_lines or self.gaps is None:
+            return
+        for behind, (ahead, gap, side) in self.gaps.nearest_ahead(f, self.close_s).items():
+            if behind not in screen or ahead not in screen:
+                continue
+            lvl = battles.level(gap, side, self.close_s)
+            if lvl is None:
+                continue
+            (x1, y1), (x2, y2) = screen[ahead], screen[behind]
+            self.c.create_line(x1, y1, x2, y2, fill=battles.LEVEL_COLORS[lvl],
+                               width=6 if lvl == "red" else 4, capstyle="round", tags="cars")
+
     def _draw_gap_line(self, f, screen):
         """Line between the two cars of the selected overtake, labelled with the gap."""
         if len(self.highlight) != 2:
@@ -363,9 +383,16 @@ class MapView:
         short = analysis.UNIT_NAMES[self.units][0]
         (x1, y1), (x2, y2) = screen[a], screen[b]
         self.c.create_line(x1, y1, x2, y2, fill="#222222", width=1, dash=(2, 3), tags="cars")
-        self.c.create_text((x1 + x2) / 2 + 6, (y1 + y2) / 2 - 8, anchor="w", font=("TkDefaultFont", 8),
-                           fill="#222222", text="%.0f %s" % (analysis.short_length(gap, self.units), short),
-                           tags="cars")
+        tgap = along = None
+        if self.gaps is not None:
+            tgap, along = self.gaps.gap(a, b, f), self.gaps.along(a, b, f)
+        if along is not None:
+            gap = abs(along)          # measured along the road: better than the progress estimate
+        text = "%.0f %s" % (analysis.short_length(gap, self.units), short)
+        if tgap is not None and abs(tgap) <= 5.0:
+            text = "%.2f s  (%s)" % (abs(tgap), text)
+        self.c.create_text((x1 + x2) / 2 + 6, (y1 + y2) / 2 - 8, anchor="w", font=("TkDefaultFont", 8, "bold"),
+                           fill="#222222", text=text, tags="cars")
 
 
 def car_labels(replay):

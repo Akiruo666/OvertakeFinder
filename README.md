@@ -23,7 +23,7 @@ The window has four tabs and a time bar (slider, `<<` `<` `>` `>>`, left/right a
 **Race tab**
 - **Track data** (click to expand/collapse; collapsed by default): one line telling whether the racing line and road surface were found, with a (!) when something is missing. Expanded it shows the details and the *Game folder...* button.
 - **Drivers and lap times**: classification (laps completed, then total time), best lap, every lap time, distance driven.
-- **Standings at the selected moment**: lap, speed, gap to the car ahead and to the leader.
+- **Standings at the selected moment**: lap, time gap to the car ahead, speed, gap to the car ahead and to the leader (metres). The row of a car is coloured by its time gap to the car ahead: yellow up to the *Close up to* setting of the Battles tab (1.0 s), orange under 0.5 s, red under 0.2 s or side by side.
 
 **Overtakes tab**
 - Driver filter with the two checkboxes (overtakes by this driver / driver overtaken), *Tick all shown* / *Untick all shown*, default clip length before/after.
@@ -34,13 +34,15 @@ The window has four tabs and a time bar (slider, `<<` `<` `>` `>>`, left/right a
 
 **Battles tab**
 - Driver filter, *Sort by* (Score, Time, Length, Close time), *Tick all shown* / *Untick all shown*.
+- *Default clip* before / after for battles (3 s / 3 s).
 - Settings (remembered): *Close up to* (1.0 s), *battle goes on up to* (2.0 s), *longest pause* (20 s), *least close time* (5 s), *smallest gap* (0 s), *Show lapping*, *Defaults*. The list follows a change at once; ticks stay on the same battles.
-- **List**: the start first, then one row per battle (time, length, cars, lap, close time, gap min / mean, side by side, lead changes, score, notes). Open a row (triangle) to see its close and pause phases; battles and phases each have their own tick (*Use*). Ticked battles go into the Save tab in a next step.
+- **List**: the start first, then one row per battle (time, length, cars, lap, close time, gap min / mean, side by side, lead changes, score, notes). Open a row (triangle) to see its close and pause phases; battles and phases each have their own tick (*Use*) and their own clip length (*Before* / *After*, `*` = set by hand): select one or more rows and use the sliders under the list. Tick a whole battle for a long report (pauses included), or only a phase for the exciting part. Ticks and clip lengths stay on the same battles when you change a setting or the driver filter.
 - Select a row to jump to its start and zoom the map onto its cars. *Best moment* jumps to the first side by side moment (or the smallest gap), *Previous red* / *Next red* step through the red moments (gap under 0.2 s or side by side). The text under the list gives the numbers, the lead changes and the notes.
-- **Track map** on the right, with the same options as on the Overtakes tab.
+- **Track map** on the right, with the same options as on the Overtakes tab. *Gap colours* (on both maps) draws a line from every car to the nearest car in front of it when they are close: yellow, orange or red as above. The dotted line of the selected pair shows the time gap and the distance along the road.
+- **Gap chart** at the bottom: the time gap of the selected battle over time, on colour bands (red, orange, yellow, grey = the battle goes on). Thick red on the zero line = side by side, vertical lines = lead changes (map labels, e.g. `A > HG`). The strips show the phases (dark = close, light = pause), all clips of the new replay and the clip of the selected row. Click or drag to jump, wheel to zoom, *Whole battle* to reset.
 
 **Save tab**
-- Overview of the clips that will be in the new replay (merged where they overlap): from, to, length and the overtakes inside, with the total length.
+- Overview of the clips that will be in the new replay, from the ticked overtakes and the ticked battles/phases together: from, to, length and what is inside, with the total length. Clips that overlap are joined, so an overtake inside a ticked battle does not give a second clip.
 - *Extra data from the original*, *Camera follows* and *Save new replay...* (the mp4 export is planned).
 
 ## Overtakes
@@ -57,6 +59,7 @@ The **Overtakes** list shows every pass: replay time, lap, overtaker, passed dri
 - Pairs that share a car and run together for at least half of the shorter battle are one battle of a group (train). When they only overlap briefly they stay separate, marked "train with ...".
 - **The start** is one entry of its own, until no group of 4 or more cars is left (or the leader finished lap 1). Normal battles are only searched after it.
 - Notes: lapping (needs the racing line), contact, off track. A battle ends when a car enters the pit lane (needs a PIT surface in the track model) or stops.
+- **Camera** (*Camera follows* in the Save tab): in a battle the camera follows the chaser of the closest pair (*Car that overtakes / chases*) or the car in front (*Car that is passed / in front*), and switches when that changes (after 1 s, at most every 3 s). *Chaser, same car all through a battle* stays on the car that was the chaser at the start of the clip. At the start the camera follows the leader.
 
 ## Units
 

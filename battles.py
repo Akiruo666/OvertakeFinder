@@ -71,8 +71,14 @@ PASS_MATCH_S = 3.0        # an entry of the Overtakes list this close to a lead 
 GROUP_SHARE = 0.5         # pairs form one group when they run together this share of the shorter one
 
 
-def level(gap_s, side=False):
-    """Colour level of a gap: 'red', 'orange', 'yellow' or None (no colour)."""
+# Strong colours (lines on the map and the chart) and light ones (table rows).
+LEVEL_COLORS = {"red": "#e53935", "orange": "#fb8c00", "yellow": "#fdd835", "grey": "#9e9e9e"}
+LEVEL_LIGHT = {"red": "#ffcdd2", "orange": "#ffe0b2", "yellow": "#fff9c4", "grey": "#eeeeee"}
+
+
+def level(gap_s, side=False, close_s=YELLOW_S, battle_s=None):
+    """Colour level of a gap: 'red', 'orange', 'yellow', 'grey' (only with
+    battle_s: still in battle) or None (no colour). Yellow goes up to close_s."""
     if gap_s is None:
         return None
     g = abs(gap_s)
@@ -80,8 +86,10 @@ def level(gap_s, side=False):
         return "red"
     if g < ORANGE_S:
         return "orange"
-    if g <= YELLOW_S:
+    if g <= close_s:
         return "yellow"
+    if battle_s is not None and g <= battle_s:
+        return "grey"
     return None
 
 
@@ -158,6 +166,29 @@ class PairGaps:
     def side(self, a, b, frame):
         v, _ = self._get(self.sides, a, b, frame)
         return bool(v)
+
+    def along(self, a, b, frame):
+        """Metres a is ahead of b along the road (None when unknown)."""
+        v, key = self._get(self.alongs, a, b, frame)
+        if v is None:
+            return None
+        return v if key == (a, b) else -v
+
+    def lap(self, a, b, frame):
+        """Laps between the two cars (0 = same lap), None when unknown."""
+        v, key = self._get(self.laps, a, b, frame)
+        if v is None or self.gap(a, b, frame) is None:
+            return None
+        return v if key == (a, b) else -v
+
+    def nearest_ahead(self, frame, limit_s=YELLOW_S):
+        """{car behind: (car ahead, gap_s, side)} - for every car the nearest car
+        in front of it on the road within limit_s (the pairs to draw)."""
+        out = {}
+        for a, b, g, s in self.close_pairs(frame, limit_s):
+            if b not in out or g < out[b][1]:
+                out[b] = (a, g, s)
+        return out
 
     def close_pairs(self, frame, limit_s=YELLOW_S):
         """[(a, b, gap_s, side)] of all pairs within limit_s at frame (a ahead)."""
@@ -647,6 +678,20 @@ def find_battles(model, found_overtakes=None, settings=None, measured=None):
         result_battles.append(start)
     result_battles.extend(out)
     return Result(result_battles, gaps, frames[min(k_start, len(frames) - 1)], st, notes)
+
+
+# ------------------------------------------------------------ camera
+def chaser_and_front(gaps, pairs, frame):
+    """(car behind, car in front) of the pair of `pairs` that is closest at
+    frame, or None when no gap is known."""
+    best = None
+    for a, b in pairs:
+        g = gaps.gap(a, b, frame)
+        if g is None:
+            continue
+        if best is None or abs(g) < best[0]:
+            best = (abs(g), (b, a) if g >= 0 else (a, b))
+    return best[1] if best else None
 
 
 # ------------------------------------------------------------ text listing
