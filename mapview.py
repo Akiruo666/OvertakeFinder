@@ -178,6 +178,8 @@ class MapView:
     highlight = ()        # car indexes of the selected overtake (overtaker, passed)
     gaps = None           # battles.PairGaps: time gaps, for the coloured lines
     gap_lines = True      # draw a coloured line between cars that are close
+    gap_cars = None       # set of car indexes: only lines between these cars (None = all)
+    gap_label = True      # label the line of the selected pair with the gap
     close_s = battles.YELLOW_S
 
     def _draw_track(self):
@@ -362,6 +364,8 @@ class MapView:
         for behind, (ahead, gap, side) in self.gaps.nearest_ahead(f, self.close_s).items():
             if behind not in screen or ahead not in screen:
                 continue
+            if self.gap_cars is not None and (behind not in self.gap_cars or ahead not in self.gap_cars):
+                continue
             lvl = battles.level(gap, side, self.close_s)
             if lvl is None:
                 continue
@@ -371,7 +375,7 @@ class MapView:
 
     def _draw_gap_line(self, f, screen):
         """Line between the two cars of the selected overtake, labelled with the gap."""
-        if len(self.highlight) != 2:
+        if len(self.highlight) != 2 or not self.gap_label:
             return
         a, b = self.highlight
         if a not in screen or b not in screen:
