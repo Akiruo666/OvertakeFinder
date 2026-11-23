@@ -13,6 +13,8 @@ from tkinter import filedialog, messagebox, ttk
 
 import acreplay
 import analysis
+import battles
+import battletab
 import chartview
 import clips
 import focusplan
@@ -86,7 +88,10 @@ def default_replay_dir():
     return docs if os.path.isdir(docs) else os.path.expanduser("~")
 
 
-class App(tk.Tk):
+class App(tk.Tk, battletab.BattlesTab):
+    TAB_NAMES = ("race", "overtakes", "battles", "save")
+    LEGACY_TABS = {0: "race", 1: "overtakes", 2: "save"}     # saved tab number before Battles
+
     def __init__(self):
         super().__init__()
         self.title("AC Overtake Finder - Race overview")
@@ -110,6 +115,7 @@ class App(tk.Tk):
         self.default_after = clips.clamp_seconds(cfg.get("clip_after_s"), clips.CLIP_AFTER_S)
         self.clip_override = {}          # overtake index -> (before, after) set by hand
         self._syncing = False
+        self.colors_list = COLORS
         self._build()
 
     # ------------------------------------------------------------------ UI
@@ -136,11 +142,14 @@ class App(tk.Tk):
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True, padx=8, pady=(0, 4))
         race_tab, over_tab, save_tab = ttk.Frame(self.notebook), ttk.Frame(self.notebook), ttk.Frame(self.notebook)
+        battle_tab = ttk.Frame(self.notebook)
         self.notebook.add(race_tab, text="  Race  ")
         self.notebook.add(over_tab, text="  Overtakes  ")
+        self.notebook.add(battle_tab, text="  Battles  ")
         self.notebook.add(save_tab, text="  Save  ")
         self._build_race(race_tab, cfg)
         self._build_overtakes(over_tab, cfg)
+        self._build_battles(battle_tab, cfg)
         self._build_save(save_tab)
         self.notebook.bind("<<NotebookTabChanged>>", lambda e: self._on_tab_changed())
 
@@ -165,9 +174,11 @@ class App(tk.Tk):
         self.bind("<Right>", lambda e: self.step(10))
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._apply_unit_headings()
-        tab = cfg.get("tab")
-        if isinstance(tab, int) and 0 <= tab < 3:
-            self.notebook.select(tab)
+        tab = cfg.get("tab_name")
+        if tab not in self.TAB_NAMES:
+            tab = self.LEGACY_TABS.get(cfg.get("tab"))
+        if tab in self.TAB_NAMES:
+            self.notebook.select(self.TAB_NAMES.index(tab))
 
     # ---- tab 1: race overview
     def _build_race(self, parent, cfg):
@@ -364,6 +375,9 @@ class App(tk.Tk):
         self.trail_var.set(str(self.map.trail_s))
         self.ahead_var.set(str(self.map.ahead_s))
         self.map.initials = bool(self.initials_var.get())
+        if hasattr(self, "battle_map"):
+            self.battle_map.trail_s, self.battle_map.ahead_s = self.map.trail_s, self.map.ahead_s
+            self.battle_map.initials = self.map.initials
         if redraw and self.model and self.selected_overtake is not None:     # show the new zoom at once
             o = self.overtakes[self.selected_overtake]
             self.map.zoom_to((o.overtaker, o.passed), o.frame, level=self._zoom_level())
@@ -436,10 +450,18 @@ class App(tk.Tk):
         else:
             self.save_summary.set("Nothing ticked yet: tick overtakes in the Overtakes tab (column 'Use').")
 
+    def _current_tab(self):
+        try:
+            return self.TAB_NAMES[self.notebook.index("current")]
+        except (tk.TclError, TypeError, ValueError, IndexError):
+            return "race"
+
     def _on_tab_changed(self):
         self._fill_clip_overview()
         if not self._sashes_set:
             self.after(80, self._place_sashes)
+        if self._current_tab() == "battles" and not self._battle_sash_set:
+            self.after(80, self._place_battle_sash)
 
     def _place_chart_sash(self):
         try:
@@ -460,7 +482,7 @@ class App(tk.Tk):
             w, h = self.upper.winfo_width(), self.work.winfo_height()
             if w < 300 or h < 200:          # tab not shown yet: try again a few times
                 self._sash_tries = getattr(self, "_sash_tries", 0) + 1
-                if self._sash_tries < 20 and self.notebook.index("current") == 1:
+                if self._sash_tries < 20 and self._current_tab() == "overtakes":
                     self.after(250, self._place_sashes)
                 return
             fh, fv = self._cfg_sashes
@@ -474,11 +496,10 @@ class App(tk.Tk):
             pass
 
     def _on_close(self):
-        try:
-            tab = self.notebook.index("current")
-        except (tk.TclError, TypeError, ValueError):
-            tab = 0
         extra = {}
+        share = self.battle_sash_share()
+        if share is not None:
+            extra["sash_bh"] = share
         try:
             if self._sashes_set:
                 w, h = self.upper.winfo_width(), self.work.winfo_height()
@@ -488,7 +509,7 @@ class App(tk.Tk):
                     extra["sash_v"] = round(self.work.sashpos(0) / h, 3)
         except (tk.TclError, AttributeError, TypeError, ZeroDivisionError):
             pass
-        save_config(geometry=self.geometry(), tab=tab if isinstance(tab, int) else 0, **extra)
+        save_config(geometry=self.geometry(), tab_name=self._current_tab(), **extra)
         self.destroy()
 
     # --------------------------------------------------------------- units
@@ -876,6 +897,7 @@ class App(tk.Tk):
             roadmap, self.road_note = analysis.choose_roadmap(replay, self.game_folder)
             model = analysis.RaceModel(replay, line, roadmap)
             found = overtakes.find_overtakes(model)
+            measured = battles.measure(model, found)
         except acreplay.ReplayError as exc:
             self.path_var.set("No replay loaded")
             self._offer_report(path, exc)
@@ -915,6 +937,7 @@ class App(tk.Tk):
             "yes" if line is not None else "no (gaps estimated)",
             "yes" if roadmap is not None else "no (tyre dirt used)"))
         self.map.set_model(model, roadmap)
+        self.battles_loaded(measured)
         self.fill_drivers()
         self.fill_overtakes()
         self.scale.configure(to=replay.frame_count - 1)
@@ -997,6 +1020,11 @@ class App(tk.Tk):
         o = self.overtakes[self.selected_overtake] if self.selected_overtake is not None else None
         self.map.highlight = (o.overtaker, o.passed) if o else ()
         self.map.draw_cars()
+        self.update_battle_map()
+
+
+App._scrolled_tree = staticmethod(scrolled_tree)
+App._save_config = staticmethod(save_config)
 
 
 def main():

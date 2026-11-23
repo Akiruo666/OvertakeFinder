@@ -541,11 +541,20 @@ def _train_notes(found, replay, sdt, st):
                                                     fc(replay.time_s(hi))))
 
 
-def find_battles(model, found_overtakes=None, settings=None):
-    st = settings or Settings()
+@dataclass
+class Measurement:
+    """Everything that does not depend on the settings (the slow part)."""
+    gaps: PairGaps
+    frames: list
+    cars: dict
+    offs: dict
+    contacts: dict
+    overtakes: list
+    notes: list
+
+
+def measure(model, found_overtakes=None):
     replay = model.replay
-    dt = replay.interval_ms / 1000.0
-    sdt = SAMPLE * dt
     notes = []
     pit_check = None
     roadmap = model.roadmap
@@ -558,12 +567,25 @@ def find_battles(model, found_overtakes=None, settings=None):
     if found_overtakes is None:
         found_overtakes = overtakes_mod.find_overtakes(model)
     gaps, frames, cars = pair_gaps(model, SAMPLE, pit_check)
-    k_start, move_frame = _start_end(model, cars, frames, st, dt)
-
     offs = {}
     if roadmap is not None:
         offs = {i: surface.off_track_frames(roadmap, replay.cars[i], step=2) for i in model.active}
     contacts = {i: overtakes_mod.contact_frames(replay.cars[i]) for i in model.active}
+    return Measurement(gaps, frames, cars, offs, contacts, found_overtakes, notes)
+
+
+def find_battles(model, found_overtakes=None, settings=None, measured=None):
+    """Battles with the given settings. Pass `measured` (from measure()) to
+    try other settings without measuring again."""
+    st = settings or Settings()
+    replay = model.replay
+    dt = replay.interval_ms / 1000.0
+    sdt = SAMPLE * dt
+    m = measured or measure(model, found_overtakes)
+    gaps, frames, cars = m.gaps, m.frames, m.cars
+    offs, contacts, found_overtakes = m.offs, m.contacts, m.overtakes
+    notes = list(m.notes)
+    k_start, move_frame = _start_end(model, cars, frames, st, dt)
 
     # battles per pair
     pair_ranges = []      # (k0, k1, (a, b))

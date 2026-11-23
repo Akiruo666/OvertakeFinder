@@ -88,6 +88,17 @@ class MapView:
             self.bounds = (min(xs), max(xs), min(zs), max(zs))
         self.redraw()
 
+    def share_from(self, other):
+        """Show the same replay and track as another map (without working out the
+        track shape again); the view of this map stays its own."""
+        self.model = other.model
+        self.labels = other.labels
+        self.shape = other.shape
+        self.bounds = other.bounds
+        self.view = self.fit_view = None
+        self.user_moved = False
+        self.redraw()
+
     # ------------------------------------------------------------ view
     def _size(self):
         return max(1, self.c.winfo_width()), max(1, self.c.winfo_height())

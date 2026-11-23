@@ -18,7 +18,7 @@ Windows SmartScreen or antivirus may warn about an unsigned program that was jus
 
 ## What you see
 
-The window has three tabs and a time bar (slider, `<<` `<` `>` `>>`, left/right arrow keys) that stays visible on all of them, so you can jump in time wherever you are. Window size, the open tab and the panel states are remembered.
+The window has four tabs and a time bar (slider, `<<` `<` `>` `>>`, left/right arrow keys) that stays visible on all of them, so you can jump in time wherever you are. Window size, the open tab and the panel states are remembered.
 
 **Race tab**
 - **Track data** (click to expand/collapse; collapsed by default): one line telling whether the racing line and road surface were found, with a (!) when something is missing. Expanded it shows the details and the *Game folder...* button.
@@ -32,6 +32,13 @@ The window has three tabs and a time bar (slider, `<<` `<` `>` `>>`, left/right 
 - **Race chart** (bottom, *Hide chart* / *Show chart*): Positions, Gap to leader or Gap to selected driver; wheel zooms in time, click jumps, click a marker selects the overtake. With many cars the Positions rows get a minimum height and a vertical scroll bar appears (Shift + wheel also scrolls); selecting an overtake scrolls its cars into view. Green strip = clips of the ticked overtakes, blue strip = the (effective) clip of the selected overtake.
 - The list / map / chart proportions start like a normal working layout (small list, large map) and your own sash positions are remembered.
 
+**Battles tab**
+- Driver filter, *Sort by* (Score, Time, Length, Close time), *Tick all shown* / *Untick all shown*.
+- Settings (remembered): *Close up to* (1.0 s), *battle goes on up to* (2.0 s), *longest pause* (20 s), *least close time* (5 s), *smallest gap* (0 s), *Show lapping*, *Defaults*. The list follows a change at once; ticks stay on the same battles.
+- **List**: the start first, then one row per battle (time, length, cars, lap, close time, gap min / mean, side by side, lead changes, score, notes). Open a row (triangle) to see its close and pause phases; battles and phases each have their own tick (*Use*). Ticked battles go into the Save tab in a next step.
+- Select a row to jump to its start and zoom the map onto its cars. *Best moment* jumps to the first side by side moment (or the smallest gap), *Previous red* / *Next red* step through the red moments (gap under 0.2 s or side by side). The text under the list gives the numbers, the lead changes and the notes.
+- **Track map** on the right, with the same options as on the Overtakes tab.
+
 **Save tab**
 - Overview of the clips that will be in the new replay (merged where they overlap): from, to, length and the overtakes inside, with the total length.
 - *Extra data from the original*, *Camera follows* and *Save new replay...* (the mp4 export is planned).
@@ -40,9 +47,9 @@ The window has three tabs and a time bar (slider, `<<` `<` `>` `>>`, left/right 
 
 The **Overtakes** list shows every pass: replay time, lap, overtaker, passed driver and notes. Pick a driver to see only his overtakes, and use the two checkboxes (both on by default) to choose **Overtakes by this driver** and/or **Driver overtaken**. The **Use** column holds a tickbox per overtake: click it (or select rows and press the space bar) to tick, or use *Tick all shown* / *Untick all shown*. Ticks are kept when you change the driver filter; they are what will go into the new replay. Click a row elsewhere to jump to that moment in the standings. All tables have scroll bars. Notes mark: lapping (a lapped car is involved, needs track data), overtaker or passed car off track (all four wheels off the tarmac; one or two wheels over the white line is legal and not marked), and contact (a car lost speed suddenly without braking for it, e.g. a wall or collision; thresholds are not tuned on a real crash yet). With the track's 3D model (.kn5, found in the game folder) the program checks where each wheel is against the road, kerb and pit meshes: off track means all four wheels off those surfaces. Without a model it uses the tyre dirt values. The AI line's edge distances are not used for off-track checks: they are narrower than the real tarmac.
 
-## Battles (in progress: detection only, no tab yet)
+## Battles
 
-`battles.py` finds cars that drive close together for a while. Run `python battles.py replay.acreplay [game folder]` for a text listing; the Battles tab follows.
+`battles.py` finds cars that drive close together for a while (shown in the Battles tab; `python battles.py replay.acreplay [game folder]` gives a text listing).
 
 - **Gap** is a time gap, measured like race timing: how long ago the car in front was where the car behind is now. It is taken from the recorded positions, so it is just as accurate without a racing line. Side by side = the two cars overlap along the road (centres less than 4 m apart).
 - **Close** is a gap of at most 1.0 s (yellow up to 1.0 s, orange under 0.5 s, red under 0.2 s or side by side). A battle starts at the first close moment and goes on while the gap stays within 2.0 s; time between 1.0 and 2.0 s is a **pause**, at most 20 s long. It needs 5 s of close time in total. All of these are settings.
