@@ -13,6 +13,8 @@ from tkinter import filedialog, messagebox, ttk
 
 import acreplay
 import analysis
+import battles
+import battletab
 import chartview
 import clips
 import focusplan
@@ -86,7 +88,10 @@ def default_replay_dir():
     return docs if os.path.isdir(docs) else os.path.expanduser("~")
 
 
-class App(tk.Tk):
+class App(tk.Tk, battletab.BattlesTab):
+    TAB_NAMES = ("race", "overtakes", "battles", "save")
+    LEGACY_TABS = {0: "race", 1: "overtakes", 2: "save"}     # saved tab number before Battles
+
     def __init__(self):
         super().__init__()
         self.title("AC Overtake Finder - Race overview")
@@ -110,6 +115,7 @@ class App(tk.Tk):
         self.default_after = clips.clamp_seconds(cfg.get("clip_after_s"), clips.CLIP_AFTER_S)
         self.clip_override = {}          # overtake index -> (before, after) set by hand
         self._syncing = False
+        self.colors_list = COLORS
         self._build()
 
     # ------------------------------------------------------------------ UI
@@ -136,11 +142,14 @@ class App(tk.Tk):
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True, padx=8, pady=(0, 4))
         race_tab, over_tab, save_tab = ttk.Frame(self.notebook), ttk.Frame(self.notebook), ttk.Frame(self.notebook)
+        battle_tab = ttk.Frame(self.notebook)
         self.notebook.add(race_tab, text="  Race  ")
         self.notebook.add(over_tab, text="  Overtakes  ")
+        self.notebook.add(battle_tab, text="  Battles  ")
         self.notebook.add(save_tab, text="  Save  ")
         self._build_race(race_tab, cfg)
         self._build_overtakes(over_tab, cfg)
+        self._build_battles(battle_tab, cfg)
         self._build_save(save_tab)
         self.notebook.bind("<<NotebookTabChanged>>", lambda e: self._on_tab_changed())
 
@@ -165,9 +174,11 @@ class App(tk.Tk):
         self.bind("<Right>", lambda e: self.step(10))
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._apply_unit_headings()
-        tab = cfg.get("tab")
-        if isinstance(tab, int) and 0 <= tab < 3:
-            self.notebook.select(tab)
+        tab = cfg.get("tab_name")
+        if tab not in self.TAB_NAMES:
+            tab = self.LEGACY_TABS.get(cfg.get("tab"))
+        if tab in self.TAB_NAMES:
+            self.notebook.select(self.TAB_NAMES.index(tab))
 
     # ---- tab 1: race overview
     def _build_race(self, parent, cfg):
@@ -199,15 +210,17 @@ class App(tk.Tk):
         paned.add(drivers, weight=3)
 
         stand = ttk.Labelframe(paned, text="Standings at the selected moment (use the time bar below)", padding=4)
-        scols = ("pos", "driver", "lap", "ahead", "leader", "speed", "dist", "distlong")
+        scols = ("pos", "driver", "lap", "tgap", "ahead", "leader", "speed", "dist", "distlong")
         self.stand_tree = scrolled_tree(stand, columns=scols, show="headings", height=7)
         # Headings that carry a unit are set by _apply_unit_headings().
         for key, text, width in (("pos", "Pos", 40), ("driver", "Driver", 200),
-                                 ("lap", "Lap", 45), ("ahead", "", 140),
+                                 ("lap", "Lap", 45), ("tgap", "Time gap ahead", 110), ("ahead", "", 140),
                                  ("leader", "", 130), ("speed", "", 90),
                                  ("dist", "", 100), ("distlong", "", 100)):
             self.stand_tree.heading(key, text=text)
             self.stand_tree.column(key, width=width, anchor="w" if key == "driver" else "center")
+        for lvl, colour in battles.LEVEL_LIGHT.items():          # row colour = time gap to the car ahead
+            self.stand_tree.tag_configure(lvl, background=colour)
         paned.add(stand, weight=2)
 
     def _apply_track_panel(self, head=None):
@@ -319,6 +332,9 @@ class App(tk.Tk):
         self.initials_var = tk.BooleanVar(value=bool(cfg.get("map_initials", True)))
         ttk.Checkbutton(mbar2, text="Initials on other cars", variable=self.initials_var,
                         command=self._on_map_options).pack(side="left", padx=(12, 0))
+        self.gap_lines_var = tk.BooleanVar(value=bool(cfg.get("map_gap_lines", True)))
+        ttk.Checkbutton(mbar2, text="Gap colours", variable=self.gap_lines_var,
+                        command=self._on_map_options).pack(side="left", padx=(12, 0))
         self.map_canvas = tk.Canvas(map_box, background=mapview.GRASS, height=200, width=200, highlightthickness=0)
         self.map_canvas.pack(fill="both", expand=True)
         self.map = mapview.MapView(self.map_canvas, COLORS)
@@ -364,11 +380,17 @@ class App(tk.Tk):
         self.trail_var.set(str(self.map.trail_s))
         self.ahead_var.set(str(self.map.ahead_s))
         self.map.initials = bool(self.initials_var.get())
+        self.map.gap_lines = bool(self.gap_lines_var.get())
+        if hasattr(self, "battle_map"):
+            self.battle_map.trail_s, self.battle_map.ahead_s = self.map.trail_s, self.map.ahead_s
+            self.battle_map.initials = self.map.initials
+            self.battle_map.gap_lines = self.map.gap_lines
         if redraw and self.model and self.selected_overtake is not None:     # show the new zoom at once
             o = self.overtakes[self.selected_overtake]
             self.map.zoom_to((o.overtaker, o.passed), o.frame, level=self._zoom_level())
         save_config(map_trail_s=self.map.trail_s, map_ahead_s=self.map.ahead_s,
-                    map_zoom=self._zoom_level(), map_initials=self.map.initials)
+                    map_zoom=self._zoom_level(), map_initials=self.map.initials,
+                    map_gap_lines=self.map.gap_lines)
         if redraw and self.model:
             self._update_map()
 
@@ -383,11 +405,12 @@ class App(tk.Tk):
     def _build_save(self, parent):
         box = ttk.Frame(parent, padding=6)
         box.pack(fill="both", expand=True)
-        ttk.Label(box, text="Clips of the ticked overtakes (in the order they will be in the new replay)").pack(anchor="w")
+        ttk.Label(box, text="Clips of the ticked overtakes and battles (in the order they will be in the new replay; "
+                            "clips that overlap are joined)").pack(anchor="w")
         ccols = ("n", "start", "end", "length", "what")
         self.clips_tree = scrolled_tree(box, columns=ccols, show="headings", height=8)
         for key, text, width in (("n", "Clip", 45), ("start", "From", 80), ("end", "To", 80),
-                                 ("length", "Length", 70), ("what", "Overtakes in this clip", 600)):
+                                 ("length", "Length", 70), ("what", "In this clip", 800)):
             self.clips_tree.heading(key, text=text)
             self.clips_tree.column(key, width=width, anchor="w" if key == "what" else "center")
         self.save_summary = tk.StringVar(value="")
@@ -422,24 +445,37 @@ class App(tk.Tk):
         step = self.replay.interval_ms / 1000.0
         cars = self.replay.cars
         total = 0.0
+        items = self.battle_clip_items()
         for n, (a, b) in enumerate(spans, start=1):
+            parts = ["Battle: " + d["label"] for d in items if a <= d["first"] and d["last"] <= b]
             inside = [o for i, o in enumerate(self.overtakes) if i in self.ticked and a <= o.frame <= b]
-            what = ",  ".join("%s > %s (%s)" % (cars[o.overtaker].driver, cars[o.passed].driver,
-                                                analysis.fmt_clock(o.time_s)) for o in inside)
+            parts += ["%s > %s (%s)" % (cars[o.overtaker].driver, cars[o.passed].driver,
+                                        analysis.fmt_clock(o.time_s)) for o in inside]
+            what = ",  ".join(parts)
             length = (b - a + 1) * step
             total += length
             tree.insert("", "end", values=(n, analysis.fmt_clock(a * step), analysis.fmt_clock(b * step),
                                            "%.0f s" % length, what))
         if spans:
-            self.save_summary.set("%d clip(s) from %d ticked overtake(s), %s in total." % (
-                len(spans), len(self.ticked), analysis.fmt_clock(total)))
+            self.save_summary.set("%d clip(s) from %d ticked overtake(s) and %d ticked battle(s)/phase(s), "
+                                  "%s in total." % (len(spans), len(self.ticked), len(items),
+                                                    analysis.fmt_clock(total)))
         else:
-            self.save_summary.set("Nothing ticked yet: tick overtakes in the Overtakes tab (column 'Use').")
+            self.save_summary.set("Nothing ticked yet: tick overtakes in the Overtakes tab or battles in "
+                                  "the Battles tab (column 'Use').")
+
+    def _current_tab(self):
+        try:
+            return self.TAB_NAMES[self.notebook.index("current")]
+        except (tk.TclError, TypeError, ValueError, IndexError):
+            return "race"
 
     def _on_tab_changed(self):
         self._fill_clip_overview()
         if not self._sashes_set:
             self.after(80, self._place_sashes)
+        if self._current_tab() == "battles" and not self._battle_sash_set:
+            self.after(80, self._place_battle_sash)
 
     def _place_chart_sash(self):
         try:
@@ -460,7 +496,7 @@ class App(tk.Tk):
             w, h = self.upper.winfo_width(), self.work.winfo_height()
             if w < 300 or h < 200:          # tab not shown yet: try again a few times
                 self._sash_tries = getattr(self, "_sash_tries", 0) + 1
-                if self._sash_tries < 20 and self.notebook.index("current") == 1:
+                if self._sash_tries < 20 and self._current_tab() == "overtakes":
                     self.after(250, self._place_sashes)
                 return
             fh, fv = self._cfg_sashes
@@ -474,11 +510,7 @@ class App(tk.Tk):
             pass
 
     def _on_close(self):
-        try:
-            tab = self.notebook.index("current")
-        except (tk.TclError, TypeError, ValueError):
-            tab = 0
-        extra = {}
+        extra = self.battle_sash_shares()
         try:
             if self._sashes_set:
                 w, h = self.upper.winfo_width(), self.work.winfo_height()
@@ -488,7 +520,7 @@ class App(tk.Tk):
                     extra["sash_v"] = round(self.work.sashpos(0) / h, 3)
         except (tk.TclError, AttributeError, TypeError, ZeroDivisionError):
             pass
-        save_config(geometry=self.geometry(), tab=tab if isinstance(tab, int) else 0, **extra)
+        save_config(geometry=self.geometry(), tab_name=self._current_tab(), **extra)
         self.destroy()
 
     # --------------------------------------------------------------- units
@@ -601,7 +633,12 @@ class App(tk.Tk):
         return self.clip_override.get(index, (self.default_before, self.default_after))
 
     def clip_ranges(self):
-        return clips.clip_ranges(self.model, self.overtakes, self.ticked, self.clip_span) if self.model else []
+        """Clips of the ticked overtakes and battles, joined where they overlap."""
+        if not self.model:
+            return []
+        spans = clips.clip_ranges(self.model, self.overtakes, self.ticked, self.clip_span)
+        spans += [(d["first"], d["last"]) for d in self.battle_clip_items()]
+        return clips.merge(spans)
 
     def _on_default_changed(self):
         self.default_before = clips.clamp_seconds(self.before_var.get(), self.default_before)
@@ -681,7 +718,9 @@ class App(tk.Tk):
             self._syncing = False
 
     def _write_focus_plan(self, target, spans, seconds, focus):
-        switches = focusplan.build(self.model, self.overtakes, self.ticked, spans, focus)
+        gaps = self.battle_result.gaps if self.battle_result else None
+        switches = focusplan.build(self.model, self.overtakes, self.ticked, spans, focus,
+                                   self.battle_clip_items(), gaps)
         doc = focusplan.document(self.model, target, switches, seconds, focus, spans)
         try:
             sidecar = focusplan.save(doc, target)
@@ -697,7 +736,7 @@ class App(tk.Tk):
             return
         spans = self.clip_ranges()
         if not spans:
-            messagebox.showinfo("Save new replay", "Tick at least one overtake first (column 'Use').")
+            messagebox.showinfo("Save new replay", "Tick at least one overtake or battle first (column 'Use').")
             return
         if self.replay.strategy != "exact layout":
             messagebox.showerror("Save new replay", "This replay was only read in limited mode, "
@@ -796,10 +835,11 @@ class App(tk.Tk):
         spans = self.clip_ranges()
         seconds = sum(b - a for a, b in spans) * (self.replay.interval_ms / 1000.0) if spans else 0
         self.ov_count.set("%d shown of %d overtakes   |   %d ticked, %d clip(s), %s in total "
-                          "(* = clip length set by hand)" % (
+                          "(with the ticked battles; * = clip length set by hand)" % (
                               len(self.shown_overtakes), len(self.overtakes), len(self.ticked), len(spans),
                               analysis.fmt_clock(seconds)))
         self._fill_clip_overview()
+        self._battle_count_text()
         if self.model:
             self.chart.draw()
             self._update_map()
@@ -876,6 +916,7 @@ class App(tk.Tk):
             roadmap, self.road_note = analysis.choose_roadmap(replay, self.game_folder)
             model = analysis.RaceModel(replay, line, roadmap)
             found = overtakes.find_overtakes(model)
+            measured = battles.measure(model, found)
         except acreplay.ReplayError as exc:
             self.path_var.set("No replay loaded")
             self._offer_report(path, exc)
@@ -915,6 +956,7 @@ class App(tk.Tk):
             "yes" if line is not None else "no (gaps estimated)",
             "yes" if roadmap is not None else "no (tyre dirt used)"))
         self.map.set_model(model, roadmap)
+        self.battles_loaded(measured)
         self.fill_drivers()
         self.fill_overtakes()
         self.scale.configure(to=replay.frame_count - 1)
@@ -977,10 +1019,21 @@ class App(tk.Tk):
             frame, self.model.frames - 1))
         tree = self.stand_tree
         tree.delete(*tree.get_children())
+        gaps = self.battle_result.gaps if self.battle_result else None
+        close_s = self.battle_settings.close_s
+        ahead = None
         for s in self.model.standings(frame):
-            tree.insert("", "end", values=(
+            tgap, tags = "-", ()
+            if gaps is not None and ahead is not None and gaps.lap(ahead, s.car_index, frame) == 0:
+                g = gaps.gap(ahead, s.car_index, frame)
+                side = gaps.side(ahead, s.car_index, frame)
+                tgap = "side by side" if side else "%.2f s" % abs(g)
+                lvl = battles.level(g, side, close_s)
+                tags = (lvl,) if lvl else ()
+            ahead = s.car_index
+            tree.insert("", "end", tags=tags, values=(
                 s.position, s.driver,
-                "-" if s.lap is None else s.lap,
+                "-" if s.lap is None else s.lap, tgap,
                 "-" if s.position == 1 else self._gap_text(s.gap_ahead_m),
                 "-" if s.position == 1 else self._gap_text(s.gap_leader_m),
                 "-" if s.speed_kmh is None else "%.0f" % analysis.speed_value(s.speed_kmh, self.units),
@@ -997,6 +1050,11 @@ class App(tk.Tk):
         o = self.overtakes[self.selected_overtake] if self.selected_overtake is not None else None
         self.map.highlight = (o.overtaker, o.passed) if o else ()
         self.map.draw_cars()
+        self.update_battle_map()
+
+
+App._scrolled_tree = staticmethod(scrolled_tree)
+App._save_config = staticmethod(save_config)
 
 
 def main():
