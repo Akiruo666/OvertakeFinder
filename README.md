@@ -40,6 +40,17 @@ The window has three tabs and a time bar (slider, `<<` `<` `>` `>>`, left/right 
 
 The **Overtakes** list shows every pass: replay time, lap, overtaker, passed driver and notes. Pick a driver to see only his overtakes, and use the two checkboxes (both on by default) to choose **Overtakes by this driver** and/or **Driver overtaken**. The **Use** column holds a tickbox per overtake: click it (or select rows and press the space bar) to tick, or use *Tick all shown* / *Untick all shown*. Ticks are kept when you change the driver filter; they are what will go into the new replay. Click a row elsewhere to jump to that moment in the standings. All tables have scroll bars. Notes mark: lapping (a lapped car is involved, needs track data), overtaker or passed car off track (all four wheels off the tarmac; one or two wheels over the white line is legal and not marked), and contact (a car lost speed suddenly without braking for it, e.g. a wall or collision; thresholds are not tuned on a real crash yet). With the track's 3D model (.kn5, found in the game folder) the program checks where each wheel is against the road, kerb and pit meshes: off track means all four wheels off those surfaces. Without a model it uses the tyre dirt values. The AI line's edge distances are not used for off-track checks: they are narrower than the real tarmac.
 
+## Battles (in progress: detection only, no tab yet)
+
+`battles.py` finds cars that drive close together for a while. Run `python battles.py replay.acreplay [game folder]` for a text listing; the Battles tab follows.
+
+- **Gap** is a time gap, measured like race timing: how long ago the car in front was where the car behind is now. It is taken from the recorded positions, so it is just as accurate without a racing line. Side by side = the two cars overlap along the road (centres less than 4 m apart).
+- **Close** is a gap of at most 1.0 s (yellow up to 1.0 s, orange under 0.5 s, red under 0.2 s or side by side). A battle starts at the first close moment and goes on while the gap stays within 2.0 s; time between 1.0 and 2.0 s is a **pause**, at most 20 s long. It needs 5 s of close time in total. All of these are settings.
+- A battle is split into **phases** (close / pause), with the smallest and largest gap, side by side time, **lead changes** measured on the road, a **best moment** (first side by side, else the smallest gap) and the start of every red moment. The score (close time + 2x red + 3x side by side + 10 per lead change) puts the best ones first.
+- Pairs that share a car and run together for at least half of the shorter battle are one battle of a group (train). When they only overlap briefly they stay separate, marked "train with ...".
+- **The start** is one entry of its own, until no group of 4 or more cars is left (or the leader finished lap 1). Normal battles are only searched after it.
+- Notes: lapping (needs the racing line), contact, off track. A battle ends when a car enters the pit lane (needs a PIT surface in the track model) or stops.
+
 ## Units
 
 The **Units** switch at the top right toggles between **Metric** (m, km, km/h) and **Imperial** (ft, mi, mph). It changes the gap columns, both distance columns (short and long), the speed column, the "Driven" column in the drivers table and the chart axis. The choice is remembered in `.ac_overtake_finder.json` in your user folder.

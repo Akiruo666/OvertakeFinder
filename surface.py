@@ -11,6 +11,7 @@ import kn5
 
 CELL_M = 8.0
 ROAD_RE = re.compile(r"^\d*(ROAD|KERB|PIT)", re.I)
+PIT_RE = re.compile(r"^\d*PIT", re.I)
 # Wheel positions relative to the car's reference point (metres): along, across.
 WHEELS = ((1.3, 0.8), (1.3, -0.8), (-1.3, 0.8), (-1.3, -0.8))
 
@@ -19,9 +20,11 @@ class RoadMap:
     def __init__(self, meshes):
         self.tris = []       # (ax, az, bx, bz, cx, cz)
         self.grid = {}
+        self.pit = set()     # indexes of triangles that belong to a PIT (pit lane) mesh
         for m in meshes:
             if not ROAD_RE.match(m["name"]):
                 continue
+            is_pit = bool(PIT_RE.match(m["name"]))
             v = m["vertices"]
             for a, b, c in m["triangles"]:
                 if a >= len(v) or b >= len(v) or c >= len(v):
@@ -29,6 +32,8 @@ class RoadMap:
                 t = (v[a][0], v[a][2], v[b][0], v[b][2], v[c][0], v[c][2])
                 k = len(self.tris)
                 self.tris.append(t)
+                if is_pit:
+                    self.pit.add(k)
                 x0, x1 = int(min(t[0], t[2], t[4]) // CELL_M), int(max(t[0], t[2], t[4]) // CELL_M)
                 z0, z1 = int(min(t[1], t[3], t[5]) // CELL_M), int(max(t[1], t[3], t[5]) // CELL_M)
                 for gx in range(x0, x1 + 1):
@@ -44,6 +49,25 @@ class RoadMap:
         return rm
 
     def on_road(self, x, z):
+        return self._hit(x, z) is not None
+
+    def on_pit(self, x, z):
+        """True if (x, z) lies on a pit lane mesh (and not also on a road/kerb mesh)."""
+        if not self.pit:
+            return False
+        hit_pit = False
+        for k in self._hits(x, z):
+            if k not in self.pit:
+                return False       # overlapping road surface: the track itself
+            hit_pit = True
+        return hit_pit
+
+    def _hit(self, x, z):
+        for k in self._hits(x, z):
+            return k
+        return None
+
+    def _hits(self, x, z):
         for k in self.grid.get((int(x // CELL_M), int(z // CELL_M)), ()):
             ax, az, bx, bz, cx, cz = self.tris[k]
             d1 = (x - bx) * (az - bz) - (ax - bx) * (z - bz)
@@ -52,8 +76,7 @@ class RoadMap:
             neg = d1 < 0 or d2 < 0 or d3 < 0
             pos = d1 > 0 or d2 > 0 or d3 > 0
             if not (neg and pos):
-                return True
-        return False
+                yield k
 
     def wheels_on_road(self, pos, heading):
         """Number of wheels (0-4) on a driveable surface. `heading` = (dx, dz) unit."""
