@@ -65,10 +65,14 @@ DROPOUT_S = 1.0           # unknown gap tolerated for this long inside a battle
 MIN_PAUSE_S = 1.5         # shorter pauses are part of the close phase around them
 START_GROUP = 4           # the start ends when no group of this many cars is left
 START_MAX_S = 120.0       # without lap data: the start lasts at most this long
+START_BROKEN_UP = "broken up"    # no group of START_GROUP cars left
+START_LAP1 = "lap 1"             # the leader finished lap 1 (the field was still together)
+START_MAX = "max"                # no lap data: START_MAX_S after the start
+SCORE_MIN_S = 30.0        # the score is per minute, but battles shorter than this count as this long
 PASS_DEADBAND_M = 3.0     # a car must be this far in front before it leads
 PASS_MARGIN = 100         # frames (3 s): a lead change just before/after the battle counts
 PASS_MATCH_S = 3.0        # an entry of the Overtakes list this close to a lead change is the same pass
-GROUP_SHARE = 0.5         # pairs form one group when they run together this share of the shorter one
+GROUP_SHARE = 0.5         # a duel belongs to a group when this share of it lies in the group
 
 
 # Strong colours (lines on the map and the chart) and light ones (table rows).
@@ -105,7 +109,7 @@ class Phase:
 
 @dataclass
 class Battle:
-    kind: str                     # "battle" or "start"
+    kind: str                     # "battle" (two cars), "group" (train of 3+) or "start"
     cars: list                    # car indexes, front to back at the start
     start: int                    # frames
     end: int
@@ -128,6 +132,8 @@ class Battle:
     off_track: list = field(default_factory=list)  # car indexes that went off
     score: float = 0.0
     flags: list = field(default_factory=list)
+    parent: int = None            # index of the group this duel belongs to (in Result.battles)
+    duels: list = field(default_factory=list)     # group: indexes of its duels (in Result.battles)
 
     @property
     def duration_s(self):
@@ -205,9 +211,11 @@ class PairGaps:
 class Result:
     battles: list
     gaps: PairGaps
-    start_end: int          # frame where the start is over
+    start_end: int          # frame where the start is over: battles are searched from here
     settings: Settings
     notes: list = field(default_factory=list)
+    start_frame: int = None  # frame the field started moving
+    start_reason: str = ""   # START_* below: why the start is over at start_end
 
 
 # ------------------------------------------------------------ gap search
@@ -360,7 +368,8 @@ def _lead_changes(alongs, frames, a, b):
     return out
 
 
-def pair_gaps(model, sample=SAMPLE, pit_check=None):
+def pair_gaps(model, sample=SAMPLE, pit_check=None, progress=None):
+    """Time gaps of every pair. `progress(fraction)` is called now and then."""
     dt = model.replay.interval_ms / 1000.0
     frames = list(range(0, model.frames, sample))
     length = model.line.length if (model.line is not None and model.line.closed) else None
@@ -368,9 +377,14 @@ def pair_gaps(model, sample=SAMPLE, pit_check=None):
     cars = {i: _Car(model, i, sample, pit_check) for i in model.active}
     out = PairGaps(sample, dt)
     act = sorted(model.active)
+    total = max(1, len(act) * (len(act) - 1) // 2)
+    done = 0
     for x in range(len(act)):
         for y in range(x + 1, len(act)):
             a, b = act[x], act[y]
+            if progress is not None and done % 5 == 0:
+                progress(done / total)
+            done += 1
             g, s, q, al = _pair_series(model, a, b, cars[a], cars[b], frames, length, dt, prefilter)
             out.gaps[(a, b)], out.sides[(a, b)], out.laps[(a, b)] = g, s, q
             out.alongs[(a, b)] = al
@@ -510,15 +524,17 @@ def _summarise(b, pairs, gaps, frames, k0, k1, st, sdt, passes):
     b.passes = [o for o in passes
                 if any(o.overtaker == w and o.passed == x and abs(o.frame - f) <= near
                        for f, w, x in b.lead_changes)]
-    b.score = b.close_s + 2 * b.red_s + 3 * b.side_s + 10 * len(b.lead_changes)
+    # per minute, so a long duel is not on top only for being long
+    minutes = max(SCORE_MIN_S, (frames[k1] - frames[k0]) * sdt / SAMPLE) / 60.0
+    b.score = (b.close_s + 2 * b.red_s + 3 * b.side_s) / minutes + 10 * len(b.lead_changes)
 
 
 def _start_end(model, cars, frames, st, dt):
-    """Sample index where the start is over, and the frame the field started moving."""
+    """(sample index where the start is over, frame the field started moving, reason)."""
     n = len(frames)
     k_move = next((k for k in range(n) if any(c.moving[k] for c in cars.values())), None)
     if k_move is None:
-        return n, None
+        return n, None, ""
     # cap: leader finished lap 1
     cap_frame = None
     if model.line is not None and model.line.closed:
@@ -533,8 +549,10 @@ def _start_end(model, cars, frames, st, dt):
                 if any(lp[f] >= 1 for lp in laps):
                     cap_frame = f
                     break
+    reason_cap = START_LAP1
     if cap_frame is None:
         cap_frame = min(model.frames - 1, frames[k_move] + int(START_MAX_S / dt))
+        reason_cap = START_MAX
     k_cap = min(n - 1, cap_frame // SAMPLE)
     act = list(model.active)
     for k in range(k_move + int(5.0 / (SAMPLE * dt)), k_cap + 1):
@@ -551,25 +569,78 @@ def _start_end(model, cars, frames, st, dt):
             else:
                 group = 1
         if best < min(START_GROUP, len(act)):
-            return k, frames[k_move]
-    return k_cap, frames[k_move]
+            return k, frames[k_move], START_BROKEN_UP
+    return k_cap, frames[k_move], reason_cap
 
 
-def _train_notes(found, replay, sdt, st):
-    """Battles that share a car and overlap in time without being one group."""
+def _make(model, kind, cars, pairs, k0, k1, frames, gaps, st, sdt, passes):
+    replay = model.replay
+    f0 = frames[k0]
+    f1 = min(frames[k1] + SAMPLE - 1, model.frames - 1)
+    cars = sorted(cars, key=lambda i: -model.progress[i][f0])
+    b = Battle(kind, cars, f0, f1, replay.time_s(f0), replay.time_s(f1),
+               (model.lap_at(cars[0], f0), model.lap_at(cars[0], f1)), pairs=list(pairs))
+    _summarise(b, b.pairs, gaps, frames, k0, k1, st, sdt, passes)
+    return b
+
+
+def _group_runs(pair_ranges, st, sdt):
+    """[(k0, k1, cars)]: stretches where the same 3 or more cars are linked by
+    running duels (a train). A car joining or leaving starts a new stretch, so
+    trains do not chain on through a whole race."""
+    starts, ends = {}, {}
+    for x, (k0, k1, _key) in enumerate(pair_ranges):
+        starts.setdefault(k0, []).append(x)
+        ends.setdefault(k1 + 1, []).append(x)
+    active = set()
+    running = {}          # frozenset of cars -> first sample of the run
+    out = []
+    need = st.min_close_s / sdt
+    # the set of running duels only changes at these samples
+    for k in sorted(set(starts) | set(ends)):
+        active.difference_update(ends.get(k, ()))
+        active.update(starts.get(k, ()))
+        trains = {c for c in _components([pair_ranges[x][2] for x in active]) if len(c) >= 3}
+        for cars_set in [c for c in running if c not in trains]:
+            k0 = running.pop(cars_set)
+            if k - 1 - k0 >= need:
+                out.append((k0, k - 1, cars_set))
+        for c in trains:
+            running.setdefault(c, k)
+    return out
+
+
+def _components(pairs):
+    """Groups of cars linked by the pairs (frozensets)."""
+    parent = {}
+
+    def root(x):
+        while parent.setdefault(x, x) != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for a, b in pairs:
+        parent[root(a)] = root(b)
+    comps = {}
+    for x in parent:
+        comps.setdefault(root(x), set()).add(x)
+    return {frozenset(c) for c in comps.values()}
+
+
+def _train_notes(duels, groups, replay, st):
+    """Duels that are not part of a group but share a car with one for a while."""
     fc = analysis.fmt_clock
-    for x in found:
-        for y in found:
-            if x is y or not set(x.cars) & set(y.cars):
+    for x in duels:
+        for y in groups:
+            if not set(x.cars) & set(y.cars):
                 continue
             lo, hi = max(x.start, y.start), min(x.end, y.end)
             if replay.time_s(hi) - replay.time_s(lo) < st.min_close_s:
                 continue
             others = [replay.cars[i].driver for i in y.cars if i not in x.cars]
-            if not others:
-                continue
-            x.flags.append("train with %s %s-%s" % (", ".join(others), fc(replay.time_s(lo)),
-                                                    fc(replay.time_s(hi))))
+            if others:
+                x.flags.append("train with %s %s-%s" % (", ".join(others), fc(replay.time_s(lo)),
+                                                        fc(replay.time_s(hi))))
 
 
 @dataclass
@@ -584,8 +655,13 @@ class Measurement:
     notes: list
 
 
-def measure(model, found_overtakes=None):
+def measure(model, found_overtakes=None, progress=None):
+    """The slow part. `progress(text, fraction or None)` tells what is being done."""
     replay = model.replay
+
+    def say(text, fraction=None):
+        if progress is not None:
+            progress(text, fraction)
     notes = []
     pit_check = None
     roadmap = model.roadmap
@@ -597,10 +673,14 @@ def measure(model, found_overtakes=None):
         notes.append("No racing line: battles with a lapped car are not found.")
     if found_overtakes is None:
         found_overtakes = overtakes_mod.find_overtakes(model)
-    gaps, frames, cars = pair_gaps(model, SAMPLE, pit_check)
+    say("Measuring the gaps between the cars", 0.0)
+    gaps, frames, cars = pair_gaps(model, SAMPLE, pit_check,
+                                   lambda f: say("Measuring the gaps between the cars", f))
     offs = {}
     if roadmap is not None:
-        offs = {i: surface.off_track_frames(roadmap, replay.cars[i], step=2) for i in model.active}
+        for n, i in enumerate(model.active):
+            say("Checking who went off the track", n / max(1, len(model.active)))
+            offs[i] = surface.off_track_frames(roadmap, replay.cars[i], step=2)
     contacts = {i: overtakes_mod.contact_frames(replay.cars[i]) for i in model.active}
     return Measurement(gaps, frames, cars, offs, contacts, found_overtakes, notes)
 
@@ -616,7 +696,7 @@ def find_battles(model, found_overtakes=None, settings=None, measured=None):
     gaps, frames, cars = m.gaps, m.frames, m.cars
     offs, contacts, found_overtakes = m.offs, m.contacts, m.overtakes
     notes = list(m.notes)
-    k_start, move_frame = _start_end(model, cars, frames, st, dt)
+    k_start, move_frame, start_reason = _start_end(model, cars, frames, st, dt)
 
     # battles per pair
     pair_ranges = []      # (k0, k1, (a, b))
@@ -624,45 +704,39 @@ def find_battles(model, found_overtakes=None, settings=None, measured=None):
         for k0, k1 in _pair_battles(gaps.gaps[key], k_start, st, sdt):
             pair_ranges.append((k0, k1, key))
 
-    # join pairs that share a car and overlap for at least min_close_s into groups
-    parent = list(range(len(pair_ranges)))
-
-    def root(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-    need = st.min_close_s / sdt
-    for x in range(len(pair_ranges)):
-        for y in range(x + 1, len(pair_ranges)):
-            a0, a1, ka = pair_ranges[x]
-            b0, b1, kb = pair_ranges[y]
-            both = min(a1, b1) - max(a0, b0)
-            shorter = min(a1 - a0, b1 - b0)
-            if set(ka) & set(kb) and both >= need and both >= GROUP_SHARE * shorter:
-                parent[root(x)] = root(y)
-    groups = {}
-    for x in range(len(pair_ranges)):
-        groups.setdefault(root(x), []).append(pair_ranges[x])
-
-    out = []
-    for members in groups.values():
-        k0 = min(m[0] for m in members)
-        k1 = max(m[1] for m in members)
-        pairs = sorted({m[2] for m in members})
-        f0 = frames[k0]
-        cars_in = sorted({i for p in pairs for i in p}, key=lambda i: -model.progress[i][f0])
-        f1 = frames[k1] + SAMPLE - 1
-        f1 = min(f1, model.frames - 1)
-        b = Battle("battle", cars_in, f0, f1, replay.time_s(f0), replay.time_s(f1),
-                   (model.lap_at(cars_in[0], f0), model.lap_at(cars_in[0], f1)), pairs=pairs)
-        _summarise(b, pairs, gaps, frames, k0, k1, st, sdt, found_overtakes)
+    duels = []
+    for k0, k1, key in pair_ranges:
+        b = _make(model, "battle", list(key), [key], k0, k1, frames, gaps, st, sdt, found_overtakes)
         _flags(b, model, offs, contacts)
-        if b.lapping and not st.show_lapping:
+        duels.append(b)
+    groups = []
+    for k0, k1, members in _group_runs(pair_ranges, st, sdt):
+        pairs = sorted(key for a0, a1, key in pair_ranges
+                       if set(key) <= members and a0 <= k1 and a1 >= k0)
+        b = _make(model, "group", list(members), pairs, k0, k1, frames, gaps, st, sdt, found_overtakes)
+        if b.close_s < st.min_close_s:
             continue
-        out.append(b)
-    _train_notes(out, replay, sdt, st)
-    out.sort(key=lambda b: -b.score)
+        _flags(b, model, offs, contacts)
+        groups.append(b)
+    if not st.show_lapping:
+        duels = [b for b in duels if not b.lapping]
+        groups = [b for b in groups if not b.lapping]
+
+    # a duel belongs to the group it lies in for the largest part (at least GROUP_SHARE)
+    home = {}
+    for d, b in enumerate(duels):
+        best = None
+        for g, grp in enumerate(groups):
+            if not set(b.cars) <= set(grp.cars):
+                continue
+            both = min(b.end, grp.end) - max(b.start, grp.start)
+            if both >= GROUP_SHARE * max(1, b.end - b.start) and (best is None or both > best[0]):
+                best = (both, g)
+        if best is not None:
+            home[d] = best[1]
+    top = groups + [b for d, b in enumerate(duels) if d not in home]
+    _train_notes([b for d, b in enumerate(duels) if d not in home], groups, replay, st)
+    top.sort(key=lambda b: -b.score)
 
     result_battles = []
     if move_frame is not None and k_start > 0:
@@ -676,8 +750,21 @@ def find_battles(model, found_overtakes=None, settings=None, measured=None):
         start.best_frame = f0
         _flags(start, model, offs, contacts)
         result_battles.append(start)
-    result_battles.extend(out)
-    return Result(result_battles, gaps, frames[min(k_start, len(frames) - 1)], st, notes)
+    # Result.battles: the start, the rows of the list (groups and duels that are not part of a
+    # group) by score, then the duels that are only shown inside their group. A group lists
+    # every duel that runs during it (`duels`); `parent` marks a duel that is only shown there.
+    ordered = result_battles
+    ordered.extend(top)
+    ordered.extend(b for d, b in enumerate(duels) if d in home)
+    index = {id(b): n for n, b in enumerate(ordered)}
+    for d, b in enumerate(duels):
+        if d in home:
+            b.parent = index[id(groups[home[d]])]
+    for grp in groups:
+        inside = [b for b in duels if set(b.cars) <= set(grp.cars) and b.start <= grp.end and b.end >= grp.start]
+        grp.duels = [index[id(b)] for b in sorted(inside, key=lambda b: b.start)]
+    end_frame = frames[min(k_start, len(frames) - 1)]
+    return Result(ordered, gaps, end_frame, st, notes, move_frame, start_reason)
 
 
 # ------------------------------------------------------------ camera
@@ -700,7 +787,14 @@ def describe(result, model):
     name = lambda i: replay.cars[i].driver      # noqa: E731
     fc = analysis.fmt_clock
     lines = []
+    rows = []
     for b in result.battles:
+        if b.parent is not None:
+            continue
+        rows.append(("", b))
+        for d in b.duels:
+            rows.append(("   duel ", result.battles[d]))
+    for indent, b in rows:
         laps = "-" if b.laps[0] is None else (
             "lap %d" % b.laps[0] if b.laps[0] == b.laps[1] else "laps %d-%d" % b.laps)
         if b.kind == "start":
@@ -708,7 +802,7 @@ def describe(result, model):
                 fc(b.start_s), fc(b.end_s), laps, len(b.cars), len(b.lead_changes),
                 ("  [" + ", ".join(b.flags) + "]") if b.flags else ""))
             continue
-        lines.append("%-6.0f %s-%s  %5.1fs  %s  %s  close %.1fs  min %.2fs  mean %.2fs  "
+        lines.append(indent + ("GROUP " if b.kind == "group" else "") + "%-6.0f %s-%s  %5.1fs  %s  %s  close %.1fs  min %.2fs  mean %.2fs  "
                      "side %.1fs  red %.1fs  %d lead changes%s" % (
                          b.score, fc(b.start_s), fc(b.end_s), b.duration_s, " vs ".join(map(name, b.cars)),
                          laps, b.close_s, b.min_gap_s, b.mean_gap_s, b.side_s, b.red_s, len(b.lead_changes),
@@ -745,6 +839,10 @@ def main(argv):
     print(note, road_note)
     for n in result.notes:
         print("note:", n)
+    fc = analysis.fmt_clock
+    if result.start_frame is not None:
+        print("Battles are searched from %s on (start %s, %s)." % (
+            fc(replay.time_s(result.start_end)), fc(replay.time_s(result.start_frame)), result.start_reason))
     print(describe(result, model))
     return 0
 

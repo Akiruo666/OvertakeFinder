@@ -904,19 +904,31 @@ class App(tk.Tk, battletab.BattlesTab):
         if path:
             self.load(path)
 
+    def _loading(self, name, text, fraction=None):
+        """Show which loading step is running (with a percentage when known)."""
+        pct = "" if fraction is None else "  %d %%" % int(100 * min(1.0, max(0.0, fraction)))
+        msg = "Loading %s:  %s ...%s" % (name, text, pct)
+        if msg != self.path_var.get():
+            self.path_var.set(msg)
+            self.update_idletasks()
+
     def load(self, path):
-        self.path_var.set("Loading %s ..." % os.path.basename(path))
+        name = os.path.basename(path)
         self.config(cursor="watch")
-        self.update_idletasks()
+        self._loading(name, "reading the replay")
         try:
             replay = acreplay.load(path)
             if replay.frame_count < 2:
                 raise acreplay.ReplayError("The replay contains no frames.")
+            self._loading(name, "reading the track data (racing line)")
             line, self.line_note = analysis.choose_line(replay, self.game_folder)
+            self._loading(name, "reading the track model (road surface)")
             roadmap, self.road_note = analysis.choose_roadmap(replay, self.game_folder)
+            self._loading(name, "following the cars along the track")
             model = analysis.RaceModel(replay, line, roadmap)
+            self._loading(name, "calculating overtakes")
             found = overtakes.find_overtakes(model)
-            measured = battles.measure(model, found)
+            measured = battles.measure(model, found, lambda text, f: self._loading(name, "calculating battles: " + text.lower(), f))
         except acreplay.ReplayError as exc:
             self.path_var.set("No replay loaded")
             self._offer_report(path, exc)
@@ -937,7 +949,6 @@ class App(tk.Tk, battletab.BattlesTab):
         self.driver_var.set(self.ALL_DRIVERS)
         self.by_var.set(True)
         self.passed_var.set(True)
-        self.path_var.set(path)
         layout = replay.layout or "-"
         text = ("Track: %s (layout %s)   Weather: %s   Cars: %d   Length: %s   Format v%d, read with: %s"
                 % (replay.track, layout, replay.weather, len(replay.cars),
@@ -955,13 +966,18 @@ class App(tk.Tk, battletab.BattlesTab):
             analysis.fmt_clock(replay.time_s(replay.frame_count - 1)),
             "yes" if line is not None else "no (gaps estimated)",
             "yes" if roadmap is not None else "no (tyre dirt used)"))
+        self.config(cursor="watch")
+        self._loading(name, "drawing the track map")
         self.map.set_model(model, roadmap)
+        self._loading(name, "calculating battles: finding the battles")
         self.battles_loaded(measured)
         self.fill_drivers()
         self.fill_overtakes()
         self.scale.configure(to=replay.frame_count - 1)
         self.chart.set_model()
         self.set_frame(0)
+        self.path_var.set(path)
+        self.config(cursor="")
 
     def _offer_report(self, path, exc):
         """Explain the failure and offer a small text report that can be shared."""

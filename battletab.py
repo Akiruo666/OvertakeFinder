@@ -8,6 +8,7 @@ the settings change, and they also hold for rows hidden by the driver filter.
 Ticked rows become clips in the Save tab, together with the ticked overtakes.
 """
 import tkinter as tk
+from tkinter import font as tkfont
 from tkinter import ttk
 
 import analysis
@@ -121,6 +122,13 @@ class BattlesTab:
         ttk.Checkbutton(row2, text="Show lapping", variable=self.blap_var,
                         command=self._on_battle_settings).pack(side="left", padx=(12, 0))
         ttk.Button(row2, text="Defaults", command=self.reset_battle_settings).pack(side="left", padx=10)
+        self.battle_start_info = tk.StringVar(value="")
+        bold = tkfont.nametofont("TkDefaultFont").copy()
+        bold.configure(weight="bold")
+        info = ttk.Label(parent, textvariable=self.battle_start_info, foreground="#0d47a1",
+                         font=bold, cursor="hand2", wraplength=1400, justify="left")
+        info.pack(fill="x", pady=(2, 2))
+        info.bind("<Button-1>", lambda e: self._jump_to_search_start())
         self.battle_count = tk.StringVar(value="")
         ttk.Label(parent, textvariable=self.battle_count).pack(fill="x")
         self.battle_note = tk.StringVar(value="")
@@ -169,6 +177,7 @@ class BattlesTab:
                                anchor="w" if key in ("cars", "notes") else "center")
         self.b_tree.tag_configure("start", foreground="#555555")
         self.b_tree.tag_configure("pause", foreground="#777777")
+        self.b_tree.tag_configure("group", foreground="#4a148c")
         self.b_tree.bind("<<TreeviewSelect>>", self._on_battle_select)
         self.b_tree.bind("<Button-1>", self._on_battle_click)
         self.b_tree.bind("<space>", self._on_battle_space)
@@ -268,9 +277,33 @@ class BattlesTab:
             if b.kind != "start":
                 for j, p in enumerate(b.phases):
                     self.battle_items[_key("p", b.cars, p.start, p.end)] = (i, j)
+        self.battle_start_info.set(self._start_text())
         notes = list(self.battle_result.notes)
         self.battle_note.set("  ".join(notes) + ("  " if notes else "") +
                              "Gap = time gap (how long ago the car in front was where the car behind is now).")
+
+    def _start_text(self):
+        """From when battles are searched, and why (shown above the list)."""
+        r = self.battle_result
+        fc = analysis.fmt_clock
+        t = self.replay.time_s
+        if r is None or r.start_frame is None or r.start_end <= r.start_frame:
+            return "Battles are searched over the whole replay."
+        start, end = fc(t(r.start_frame)), fc(t(r.start_end))
+        head = "Battles are searched from %s on (click to go there). At the start (%s) the field drives " \
+               "too close together: " % (end, start)
+        if r.start_reason == battles.START_LAP1:
+            why = "it stayed together until the leader finished lap 1 at %s." % end
+        elif r.start_reason == battles.START_MAX:
+            why = "without lap data the start counts as over after %.0f s, at %s." % (battles.START_MAX_S, end)
+        else:
+            why = "at %s it had broken up (no group of %d or more cars within %s s of each other)." % (
+                end, battles.START_GROUP, _num(self.battle_settings.battle_s))
+        return head + why + " Everything before that is in the Start row."
+
+    def _jump_to_search_start(self):
+        if self.model and self.battle_result:
+            self.set_frame(self.battle_result.start_end)
 
     def _carry_over(self, old_ticked, old_override):
         """After new settings: keep ticks and hand-set clips on the same battles/phases."""
@@ -354,6 +387,8 @@ class BattlesTab:
                 label = "Start"
             else:
                 label = " vs ".join(cars[c].driver for c in b.cars)
+                if b.kind == "group":
+                    label = "train " + label
                 if j is not None:
                     label += " (%s phase)" % b.phases[j].kind
             label += " %s-%s" % (analysis.fmt_clock(t(start)), analysis.fmt_clock(t(end)))
@@ -445,7 +480,7 @@ class BattlesTab:
         found = self.battle_result.battles if self.battle_result else []
         key = next((k for k, label in SORTS if label == self.bsort_var.get()), "score")
         start = [i for i, b in enumerate(found) if b.kind == "start"]
-        rest = [i for i, b in enumerate(found) if b.kind != "start"]
+        rest = [i for i, b in enumerate(found) if b.kind != "start" and b.parent is None]
         if key == "time":
             rest.sort(key=lambda i: found[i].start)
         elif key == "length":
@@ -479,39 +514,56 @@ class BattlesTab:
             self._update_battle_count()
             return
         found = self.battle_result.battles
-        cars = self.replay.cars
-        fc = analysis.fmt_clock
-        t = self.replay.time_s
         for i in self._sorted_battles():
             b = found[i]
             if not self._battle_visible(b):
                 continue
-            key = _key("b", b.cars, b.start, b.end)
             iid = "b%d" % i
-            self.battle_rows[iid], self.battle_keys[iid] = (i, None), key
-            when = "%s - %s" % (fc(b.start_s), fc(b.end_s))
-            if b.kind == "start":
-                values = (self._tick(key), when, fc(b.duration_s), "Start (%d cars)" % len(b.cars),
-                          self._laps_text(b), "", "", "", len(b.lead_changes) or "", "",
-                          *self._clip_cells(key), ", ".join(b.flags))
-                tree.insert("", "end", iid=iid, values=values, tags=("start",))
-                continue
-            gap = "-" if b.min_gap_s is None else "%.2f / %.2f s" % (b.min_gap_s, b.mean_gap_s)
-            values = (self._tick(key), when, fc(b.duration_s), " vs ".join(cars[c].driver for c in b.cars),
-                      self._laps_text(b), "%.0f s" % b.close_s, gap, "%.1f s" % b.side_s if b.side_s else "-",
-                      len(b.lead_changes) or "-", "%.0f" % b.score, *self._clip_cells(key), ", ".join(b.flags))
-            tree.insert("", "end", iid=iid, values=values)
-            for j, p in enumerate(b.phases):
-                pkey = _key("p", b.cars, p.start, p.end)
-                pid = "b%d.%d" % (i, j)
-                self.battle_rows[pid], self.battle_keys[pid] = (i, j), pkey
-                pgap = "" if p.min_gap_s is None else "%.2f - %.2f s" % (p.min_gap_s, p.max_gap_s)
-                leads = sum(1 for f, _w, _x in b.lead_changes if p.start <= f <= p.end)
-                tree.insert(iid, "end", iid=pid, tags=(p.kind,), values=(
-                    self._tick(pkey), "%s - %s" % (fc(t(p.start)), fc(t(p.end))), fc(t(p.end) - t(p.start)),
-                    p.kind, "", "", pgap, "%.1f s" % p.side_s if p.side_s else "", leads or "", "",
-                    *self._clip_cells(pkey), ""))
+            self._insert_battle("", iid, i)
+            if b.kind == "group":
+                for d in b.duels:
+                    if self._battle_visible(found[d]):
+                        self._insert_battle(iid, "g%dd%d" % (i, d), d)
         self._update_battle_count()
+
+    def _insert_battle(self, parent, iid, i):
+        """One row of the list (a battle, group or duel) with its phases under it."""
+        tree = self.b_tree
+        b = self.battle_result.battles[i]
+        cars = self.replay.cars
+        fc = analysis.fmt_clock
+        t = self.replay.time_s
+        key = _key("b", b.cars, b.start, b.end)
+        self.battle_rows[iid], self.battle_keys[iid] = (i, None), key
+        when = "%s - %s" % (fc(b.start_s), fc(b.end_s))
+        if b.kind == "start":
+            values = (self._tick(key), when, fc(b.duration_s), "Start (%d cars)" % len(b.cars),
+                      self._laps_text(b), "", "", "", len(b.lead_changes) or "", "",
+                      *self._clip_cells(key), ", ".join(b.flags))
+            tree.insert(parent, "end", iid=iid, values=values, tags=("start",))
+            return
+        names = " vs ".join(cars[c].driver for c in b.cars)
+        if b.kind == "group":
+            names = "Train of %d: %s" % (len(b.cars), names)
+        elif parent:
+            names = "Duel: " + names
+        gap = "-" if b.min_gap_s is None else "%.2f / %.2f s" % (b.min_gap_s, b.mean_gap_s)
+        values = (self._tick(key), when, fc(b.duration_s), names,
+                  self._laps_text(b), "%.0f s" % b.close_s, gap, "%.1f s" % b.side_s if b.side_s else "-",
+                  len(b.lead_changes) or "-", "%.0f" % b.score, *self._clip_cells(key), ", ".join(b.flags))
+        tree.insert(parent, "end", iid=iid, values=values, tags=(b.kind,))
+        if b.kind == "group":
+            return                   # a group opens into its duels, not into phases
+        for j, p in enumerate(b.phases):
+            pkey = _key("p", b.cars, p.start, p.end)
+            pid = "%s.%d" % (iid, j)
+            self.battle_rows[pid], self.battle_keys[pid] = (i, j), pkey
+            pgap = "" if p.min_gap_s is None else "%.2f - %.2f s" % (p.min_gap_s, p.max_gap_s)
+            leads = sum(1 for f, _w, _x in b.lead_changes if p.start <= f <= p.end)
+            tree.insert(iid, "end", iid=pid, tags=(p.kind,), values=(
+                self._tick(pkey), "%s - %s" % (fc(t(p.start)), fc(t(p.end))), fc(t(p.end) - t(p.start)),
+                p.kind, "", "", pgap, "%.1f s" % p.side_s if p.side_s else "", leads or "", "",
+                *self._clip_cells(pkey), ""))
 
     def _tick(self, key):
         return TICK_ON if key in self.battle_ticked else TICK_OFF
@@ -526,7 +578,9 @@ class BattlesTab:
 
     def _battle_count_text(self):
         found = self.battle_result.battles if self.battle_result else []
-        shown = sum(1 for _iid, (_i, j) in self.battle_rows.items() if j is None)
+        shown = sum(1 for iid, (_i, j) in self.battle_rows.items() if j is None and iid.startswith("b")
+                    and "." not in iid)
+        found = [b for b in found if b.parent is None]
         n_b = sum(1 for k in self.battle_ticked if k[0] == "b")
         n_p = len(self.battle_ticked) - n_b
         spans = self.clip_ranges() if self.model else []
@@ -543,12 +597,13 @@ class BattlesTab:
             self.battle_ticked.add(key)
         else:
             self.battle_ticked.discard(key)
-        self.b_tree.set(iid, "tick", TICK_ON if on else TICK_OFF)
+        for other, k in self.battle_keys.items():     # the same duel can be shown twice
+            if k == key:
+                self.b_tree.set(other, "tick", TICK_ON if on else TICK_OFF)
 
     def tick_shown_battles(self, on):
-        for iid, (_i, j) in self.battle_rows.items():
-            if j is None:
-                self._set_battle_tick(iid, on)
+        for iid in self.b_tree.get_children():          # the rows at the top level
+            self._set_battle_tick(iid, on)
         self._update_battle_count()
 
     def _on_battle_click(self, event):
@@ -610,6 +665,9 @@ class BattlesTab:
             lines.append("Start: %d cars, %s - %s. Normal battles are searched from %s on." % (
                 len(b.cars), fc(b.start_s), fc(b.end_s), fc(b.end_s)))
         else:
+            if b.kind == "group":
+                lines.append("Train of %d cars, %d duel(s) inside: open the row to pick a duel, its map, "
+                             "chart and camera then follow only those two cars." % (len(b.cars), len(b.duels)))
             lines.append("%s: close %.0f s of %.0f s, gap min %.2f s / mean %.2f s, side by side %.1f s, "
                          "red %.1f s." % (" vs ".join(map(name, b.cars)), b.close_s, b.duration_s,
                                          b.min_gap_s, b.mean_gap_s, b.side_s, b.red_s))
